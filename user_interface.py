@@ -1,0 +1,502 @@
+import codecs
+import tkinter as tk
+from collections import deque
+from interpreter import BFInterpreter, ExecutionEndedError
+
+
+class TextLineNumbers(tk.Canvas):
+    def __init__(self, *args, textwidget=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.textwidget = textwidget
+        self.redraw()
+
+    def redraw(self, *args):
+        """redraw line numbers"""
+        self.delete('all')
+
+        i = self.textwidget.index('@0,0')
+        while True:
+            dline = self.textwidget.dlineinfo(i)
+            if dline is None:
+                break
+            y = dline[1]
+            linenum = str(i).split('.')[0]
+            self.create_text(2, y, anchor='nw', text=linenum)
+            i = self.textwidget.index(f'{i}+1line')
+
+        # Refreshes the canvas widget every 10ms
+        self.after(10, self.redraw)
+
+
+class ScrollbarText(tk.Text):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.create_scrollbars()
+
+    def create_scrollbars(self):
+        self.vsb = tk.Scrollbar(
+            self.master, orient="vertical", command=self.yview)
+        self.hsb = tk.Scrollbar(
+            self.master, orient="horizontal", command=self.xview)
+        self.configure(yscrollcommand=self.vsb.set)
+        self.configure(xscrollcommand=self.hsb.set)
+
+
+class ResizeFrame(tk.Frame):
+    def __init__(self, master, relx, rely, relwidth, relheight, *args, **kwargs):
+        super().__init__(master, *args, **kwargs)
+
+        self.relx = relx
+        self.rely = rely
+        self.relwidth = relwidth
+        self.relheight = relheight
+
+    def resize(self):
+        self.place(relx=self.relx,
+                   rely=self.rely,
+                   relwidth=self.relwidth,
+                   relheight=self.relheight)
+
+
+class ScrollTextFrame(tk.Frame):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.create_widgets()
+
+    def create_widgets(self):
+        self.text = ScrollbarText(self, wrap='none')
+        self.text.tag_configure('highlight', background='grey')
+
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        self.text.grid(row=0, column=0, sticky='nesw')
+        self.text.vsb.grid(row=0, column=1, sticky='nesw')
+        self.text.hsb.grid(row=1, column=0, sticky='nesw')
+
+
+class CodeFrame(ResizeFrame, ScrollTextFrame):
+    def create_widgets(self):
+        self.text = ScrollbarText(self, wrap='none')
+        self.text.tag_configure('highlight', background='grey')
+
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=1)
+
+        code_line_numbers = TextLineNumbers(
+            self, textwidget=self.text, width=30)
+
+        self.text.grid(row=0, column=1, sticky='nesw')
+        code_line_numbers.grid(row=0, column=0, sticky='nesw')
+        self.text.vsb.grid(row=0, column=2, sticky='nesw')
+        self.text.hsb.grid(row=1, column=1, sticky='nesw')
+
+
+class TapeFrame(ResizeFrame):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.cells = []
+        self.headings = []
+        self.create_frame()
+        self.reset()
+
+    def create_frame(self):
+        self.canvas = tk.Canvas(self)
+        self.frame = tk.Frame(self.canvas)
+        self.vsb = tk.Scrollbar(self, orient="vertical",
+                                command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.vsb.set)
+
+        self.vsb.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.canvas_frame = self.canvas.create_window(
+            0, 0, window=self.frame, anchor="nw")
+
+        # self.frame.bind("<Configure>", self.resize_canvas)
+
+    def reset(self):
+        for cell in self.cells:
+            cell.destroy()
+        self.cells = []
+        for _ in range(10):
+            self.add_cell()
+
+        for heading in self.headings:
+            heading.destroy()
+        self.headings = []
+
+        self.last_tape_length = None
+        self.last_rows = None
+        self.last_columns = None
+        self.last_ind = 0
+        self.init_tape()
+
+    def init_tape(self):
+        columns = self.winfo_width() // 50
+        # print(
+        #     f'init tape, {self.frame.winfo_width()=} {self.canvas.winfo_width()=} {self.winfo_width()=}')
+        # print('length of items in frame:', len(self.frame.winfo_children()))
+        if columns == 0:
+            return
+        rows = self.tape_length // columns + 1
+
+        if self.last_tape_length == self.tape_length and self.last_rows == rows and self.last_columns == columns:
+            return
+
+        if not (self.last_columns == columns and self.last_rows == rows):
+            self.create_all_headings(rows, columns)
+        self.place_all_cells(columns)
+
+        for i in range(columns + 1):
+            self.frame.columnconfigure(i, weight=1)
+
+        self.last_tape_length = self.tape_length
+        self.last_rows = rows
+        self.last_columns = columns
+
+    def place_all_cells(self, columns):
+        for i, cell in enumerate(self.cells):
+            row, column = divmod(i, columns)
+            self.place_cell(cell, row, column)
+
+    def place_cell(self, cell, row, column):
+        cell.grid(row=row + 1, column=column + 1, sticky='nsew')
+
+    def create_all_headings(self, rows, columns):
+        positions = [{'row': 0, 'column': x + 1} for x in range(columns)] \
+            + [{'row': y + 1, 'column': 0} for y in range(rows)]
+
+        headings = self.iter_headings()
+
+        for last, (pos, heading) in enumerate(zip(positions, headings)):
+            self.display_heading(heading, **pos, column_count=columns)
+        for heading in self.headings[last + 1:]:
+            heading.grid_forget()
+
+    def display_heading(self, heading, row, column, column_count):
+        heading.grid(row=row, column=column)
+        heading.config(state='normal')
+        heading.delete(0, 'end')
+        heading.insert(0, column - 1 if row == 0 else row * column_count)
+        heading.config(state='disabled')
+
+    def create_heading(self):
+        heading = tk.Entry(self.frame)
+        heading.config(disabledbackground='grey',
+                       disabledforeground='black')
+        self.headings.append(heading)
+        return heading
+
+    def resize(self, *args):
+        super().resize()
+        self.resize_canvas()
+        self.init_tape()
+
+    def resize_canvas(self, *args):
+        # print(
+        #     f'TapeFrame.resizecanvas, {self.winfo_width()=}, {self.canvas.winfo_width()=}')
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        self.canvas.itemconfig(
+            self.canvas_frame, width=self.canvas.winfo_width())
+
+    def set_cell(self, cell_ind, value):
+        print(cell_ind, value)
+        try:
+            cell = self.cells[cell_ind]
+        except IndexError:
+            cell = self.add_cell()
+            self.init_tape()
+        last_cell = self.cells[self.last_ind]
+
+        last_cell.config(disabledbackground='white')
+
+        cell.config(state='normal')
+        cell.delete(0, 'end')
+        cell.insert(0, value)
+        cell.config(state='disabled', disabledbackground='red')
+
+        self.last_ind = cell_ind
+
+    def add_cell(self):
+        cell = tk.Entry(self.frame)
+        cell.insert(0, 0)
+        cell.config(state='disabled', disabledbackground='white',
+                    disabledforeground='black')
+        self.cells.append(cell)
+        return cell
+
+    def iter_headings(self):
+        for heading in self.headings:
+            yield heading
+        while True:
+            heading = self.create_heading()
+            yield heading
+
+    @property
+    def tape_length(self):
+        return len(self.cells)
+
+
+class CommandsFrame(ResizeFrame):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.create_widgets()
+        self.stop_command()
+
+    def create_widgets(self):
+
+        self.buttons_frame = ResizeFrame(self, 0, .3, 1, .15)
+        self.run_button = tk.Button(
+            self.buttons_frame, text='run', command=self.run_command)
+        self.step_button = tk.Button(
+            self.buttons_frame, text='step', command=self.step_command)
+        self.stop_button = tk.Button(
+            self.buttons_frame, text='stop', command=self.stop_command)
+        self.pause_button = tk.Button(
+            self.buttons_frame, text='pause', command=self.pause_command)
+        self.back_button = tk.Button(
+            self.buttons_frame, text='back', command=self.back_command)
+        self.buttons = [self.run_button, self.step_button, self.stop_button,
+                        self.pause_button, self.back_button]
+
+        self.frames = [self.buttons_frame]
+
+    def set_input_options(self):
+        input_frame = ResizeFrame(self, 0, 0, 1, .1)
+        input_label = tk.Label(input_frame, text='Input:', width=10)
+        input_entry = tk.Entry(input_frame)
+        input_label.pack(side='left')
+        input_entry.pack(side='left', fill='x', expand=True)
+
+        scale_frame = ResizeFrame(self, 0, .1, 1, .2)
+        speed_scale = tk.Scale(scale_frame, from_=1, to=100,
+                               orient='horizontal', command=self.master.set_runspeed)
+        speed_label = tk.Label(scale_frame, text='Speed:', width=10)
+        speed_fast_mode = tk.IntVar()
+        speed_checkbutton = tk.Checkbutton(scale_frame, text='faster',
+                                           variable=speed_fast_mode,
+                                           command=self.master.set_runspeed)
+        speed_label.pack(side='left')
+        speed_scale.pack(side='left', fill='x', expand=True)
+        speed_checkbutton.pack(side='right', padx=(10, 0))
+
+        output_frame = ResizeFrame(self, 0, .45, 1, .55)
+        output_label = tk.Label(output_frame, text='Output:', width=10)
+
+        output_text_frame = ScrollTextFrame(output_frame)
+        output_text = output_text_frame.text
+        output_label.pack()
+        output_text_frame.pack(fill='both', expand=True)
+
+        self.frames.extend([input_frame, scale_frame, output_frame])
+
+        return input_entry, output_text, speed_scale, speed_fast_mode
+
+    def clear_buttons(self):
+        for button in self.buttons:
+            button.grid_forget()
+
+    def run_command(self):
+        self.clear_buttons()
+        self.grid_button(self.stop_button, row=0, column=0)
+        self.grid_button(self.pause_button, row=0, column=1)
+        self.master.run()
+
+    def step_command(self):
+        self.clear_buttons()
+        self.grid_button(self.stop_button, row=0, column=0)
+        self.grid_button(self.step_button, row=0, column=1)
+        self.grid_button(self.back_button, row=0, column=2)
+        self.grid_button(self.run_button, row=0, column=3)
+        self.master.step()
+
+    def pause_command(self):
+        self.clear_buttons()
+        self.grid_button(self.stop_button, row=0, column=0)
+        self.grid_button(self.step_button, row=0, column=1)
+        self.grid_button(self.back_button, row=0, column=2)
+        self.grid_button(self.run_button, row=0, column=3)
+        self.master.pause()
+
+    def stop_command(self):
+        self.clear_buttons()
+        self.grid_button(self.run_button, row=0, column=0)
+        self.grid_button(self.step_button, row=0, column=1)
+        self.master.stop()
+
+    def back_command(self):
+        self.clear_buttons()
+        self.grid_button(self.stop_button, row=0, column=0)
+        self.grid_button(self.step_button, row=0, column=1)
+        self.grid_button(self.back_button, row=0, column=2)
+        self.grid_button(self.run_button, row=0, column=3)
+        self.master.back()
+
+    def grid_button(self, button, row, column):
+        button.grid(row=row, column=column, sticky='nswe', padx=2)
+
+    def configure_buttons(self):
+        for i in range(4):
+            self.buttons_frame.columnconfigure(
+                i, weight=1, minsize=self.winfo_width() / 4)
+
+    def resize(self):
+        super().resize()
+        for frame in self.frames:
+            frame.resize()
+        self.configure_buttons()
+
+
+class App(tk.Frame):
+    def __init__(self, master):
+        super().__init__(master)
+
+        self.interpreter = None
+
+        self.pack(fill='both', expand=True)
+        self.createWidgets()
+        # self.master.bind("<Configure>", self.resize)
+        self.bind("<Configure>", self.resize)
+        # self.bind("<Configure>", self.event_handler)
+        # self.bind('<Enter>', self.event_handler)
+
+        self.last_pointer = 0
+        self.last_event = ''
+
+        self.set_runspeed()
+
+        self.update()
+        self.resize()
+
+    def createWidgets(self):
+        code_text_frame = CodeFrame(self, .02, .1, .5, .85)
+        self.code_text = code_text_frame.text
+
+        self.tape_frame = TapeFrame(self, .55, .1, .4, .35)
+
+        self.commands_frame = CommandsFrame(self, .55, .5, .4, .45)
+        self.input_entry, self.output_text, self.speed_scale, self.fast_mode = self.commands_frame.set_input_options()
+
+        self.main_frames = [code_text_frame, self.tape_frame, self.commands_frame]
+
+    def event_handler(self, event):
+        current_event = event.type
+        # if self.last_event == tk.EventType.Configure and (current_event == tk.EventType.Enter or self.master.attributes('-zoomed')) \
+        #         or current_event == tk.EventType.Configure and self.master.attributes('-zoomed'):
+        if current_event == tk.EventType.Enter:
+            self.resize()
+        self.last_event = current_event
+
+    def resize(self, *args):
+        self.update()
+        for frame in self.main_frames:
+            frame.resize()
+
+    def init_interpreter(self):
+        self.code = self.get_code()
+        self.interpreter = BFInterpreter(self.code, self.next_input)
+        self.tape_frame.reset()
+        self.past_input_chars = deque()
+
+    def step(self):
+        if self.interpreter is None:
+            self.init_interpreter()
+
+        try:
+            code_pointer = self.interpreter.step()
+        except ExecutionEndedError:
+            self.commands_frame.pause_command()
+        else:
+            print(self.interpreter.tape)
+            self.configure_current(code_pointer)
+
+    def run(self):
+        if self.interpreter is None:
+            self.init_interpreter()
+        self.run_code = True
+        self.run_steps()
+
+    def run_steps(self):
+        if not self.run_code:
+            return
+        self.step()
+        self.after(self.runspeed, self.run_steps)
+
+    def stop(self):
+        self.interpreter = None
+        self.run_code = False
+
+    def pause(self):
+        self.run_code = False
+
+    def back(self):
+        code_pointer = self.interpreter.back()
+        self.configure_current(code_pointer)
+
+    def configure_current(self, code_pointer):
+        self.highlight_cell()
+        self.configure_output()
+        self.hightlight_text(code_pointer)
+
+    def hightlight_text(self, code_pointer):
+        self.code_text.tag_remove(
+            'highlight', f'1.0+{self.last_pointer}c', f'1.0+{self.last_pointer + 1}c')
+        self.code_text.tag_add('highlight', f'1.0+{code_pointer}c')
+        self.last_pointer = code_pointer
+
+    def highlight_cell(self):
+        self.tape_frame.set_cell(
+            self.interpreter.tape_pointer, self.interpreter.current_cell)
+
+    def configure_output(self):
+        output = self.interpreter.output
+        current_output = self.output_text.get('1.0', 'end-1c')
+        if output != current_output:
+            self.output_text.delete('1.0', 'end')
+            self.output_text.insert('1.0', output)
+
+    def set_runspeed(self, *args):
+        """`value` should be an integer between 1 and 100 inclusive"""
+        speed_scale = self.speed_scale.get()
+        fast_mode = self.fast_mode.get()
+        runspeed = (110 - speed_scale) // 10 if fast_mode \
+            else int(1000 / (speed_scale * speed_scale * .0098 + 1))
+        self.runspeed = runspeed
+
+    def get_code(self):
+        code = self.code_text.get('1.0', 'end')
+        return code
+
+    def next_input(self):
+        input_ = self.input_entry.get()
+        if not input_:
+            return None
+        next_char, *rest = input_
+        if next_char == '\\':
+            second_char, *rest = rest
+            next_char = next_char + second_char
+        self.input_entry.delete(0, len(input_) - len(rest))
+        self.past_input_chars.append(next_char)
+        next_char = codecs.decode(next_char, 'unicode_escape')
+        print(self.past_input_chars)
+        return next_char
+
+
+def main():
+    # root = App()
+    root = tk.Tk()
+    root.wm_title('BF Interpreter')
+    root.geometry('1280x720')
+
+    App(root)
+
+    root.mainloop()
+
+
+if __name__ == '__main__':
+    main()
