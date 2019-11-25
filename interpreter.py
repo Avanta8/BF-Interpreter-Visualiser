@@ -23,10 +23,6 @@ class BFInterpreter:
             ',': self.accept_input,
             '.': self.add_output
         }
-        self.back_commands = {
-            '+': self.decrement_cell,
-            '-': self.increment_cell,
-        }
 
     def step(self):
         if self.code_pointer + 1 >= len(self.code):
