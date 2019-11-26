@@ -3,7 +3,7 @@ from collections import deque
 
 class BFInterpreter:
 
-    def __init__(self, code, input_func=input):
+    def __init__(self, code, input_func=input, maxlen=None):
         self.code = code
         self.input_func = input_func
         self.brackets = self.match_brackets(code)
@@ -12,7 +12,7 @@ class BFInterpreter:
         self.code_pointer = -1
         self.output = ''
         self.instruction_count = 0
-        self.past = deque(maxlen=10000)
+        self.past = deque(maxlen=maxlen)
         self.commands = {
             '[': self.open_loop,
             ']': self.close_loop,
@@ -33,19 +33,23 @@ class BFInterpreter:
 
         self.code_pointer += 1
         try:
-            while self.code[self.code_pointer] not in self.commands:
+            while self.current_instruction not in self.commands:
                 self.code_pointer += 1
         except IndexError:
             raise ExecutionEndedError
 
         code_pointer = self.code_pointer
-        self.commands[self.code[self.code_pointer]]()
+        self.commands[self.current_instruction]()
 
         return code_pointer
 
     def run(self):
-        while self.code_pointer < len(self.code):
-            self.step()
+        while True:
+            try:
+                self.step()
+            except ExecutionEndedError:
+                break
+        return self.output
 
     def open_loop(self):
         if self.current_cell == 0:
@@ -85,6 +89,10 @@ class BFInterpreter:
     def current_cell(self):
         return self.tape[self.tape_pointer]
 
+    @property
+    def current_instruction(self):
+        return self.code[self.code_pointer]
+
     @staticmethod
     def match_brackets(code):
         stack = deque()
@@ -104,8 +112,12 @@ class ExecutionEndedError(Exception):
 
 
 def main():
-    return
-
+    quine = """
+Written by Erik Bosman
+->++>+++>+>+>++>>+>+>+++>>+>+>++>+++>+++>+>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>+>+>++>>>+++>>>>>+++>+>>>>>>>>>>>>>>>>>>>>>>+++>>>>>>>++>+++>+++>+>>+++>+++>+>+++>+>+++>+>++>+++>>>+>+>+>+>++>+++>+>+>>+++>>>>>>>+>+>>>+>+>++>+++>+++>+>>+++>+++>+>+++>+>++>+++>++>>+>+>++>+++>+>+>>+++>>>+++>+>>>++>+++>+++>+>>+++>>>+++>+>+++>+>>+++>>+++>>+[[>>+[>]+>+[<]<-]>>[>]<+<+++[<]<<+]>>>[>]+++[++++++++++>++[-<++++++++++++++++>]<.<-<]
+"""
+    interpreter = BFInterpreter(quine)
+    print(interpreter.run())
 
 if __name__ == '__main__':
     main()
