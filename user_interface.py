@@ -1,4 +1,5 @@
 import codecs
+import re
 import tkinter as tk
 from collections import deque
 from interpreter import BFInterpreter, ExecutionEndedError
@@ -68,7 +69,6 @@ class ScrollTextFrame(tk.Frame):
 
     def create_widgets(self):
         self.text = ScrollbarText(self, wrap='none')
-        self.text.tag_configure('highlight', background='grey')
 
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
@@ -116,13 +116,11 @@ class TapeFrame(ResizeFrame):
         self.canvas_frame = self.canvas.create_window(
             0, 0, window=self.frame, anchor="nw")
 
-        # self.frame.bind("<Configure>", self.resize_canvas)
-
     def reset(self):
         for cell in self.cells:
             cell.destroy()
         self.cells = []
-        for _ in range(10):
+        for _ in range(20):
             self.add_cell()
 
         for heading in self.headings:
@@ -136,10 +134,8 @@ class TapeFrame(ResizeFrame):
         self.init_tape()
 
     def init_tape(self):
+        self.resize_canvas()
         columns = self.winfo_width() // 50
-        # print(
-        #     f'init tape, {self.frame.winfo_width()=} {self.canvas.winfo_width()=} {self.winfo_width()=}')
-        # print('length of items in frame:', len(self.frame.winfo_children()))
         if columns == 0:
             return
         rows = self.tape_length // columns + 1
@@ -193,12 +189,9 @@ class TapeFrame(ResizeFrame):
 
     def resize(self, *args):
         super().resize()
-        self.resize_canvas()
         self.init_tape()
 
     def resize_canvas(self, *args):
-        # print(
-        #     f'TapeFrame.resizecanvas, {self.winfo_width()=}, {self.canvas.winfo_width()=}')
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         self.canvas.itemconfig(
             self.canvas_frame, width=self.canvas.winfo_width())
@@ -269,7 +262,9 @@ class CommandsFrame(ResizeFrame):
     def set_input_options(self):
         input_frame = ResizeFrame(self, 0, 0, 1, .1)
         input_label = tk.Label(input_frame, text='Input:', width=10)
-        input_entry = tk.Entry(input_frame)
+        input_entry = tk.Text(input_frame, height=1, wrap='none')
+        input_entry.tag_configure('highlight', background='grey')
+        input_entry.bind('<Return>', lambda e: 'break')
         input_label.pack(side='left')
         input_entry.pack(side='left', fill='x', expand=True)
 
@@ -290,6 +285,7 @@ class CommandsFrame(ResizeFrame):
 
         output_text_frame = ScrollTextFrame(output_frame)
         output_text = output_text_frame.text
+        output_text.configure(state='disabled')
         output_label.pack()
         output_text_frame.pack(fill='both', expand=True)
 
@@ -360,18 +356,12 @@ class App(tk.Frame):
 
         self.pack(fill='both', expand=True)
         self.createWidgets()
-        # self.master.bind("<Configure>", self.resize)
         self.bind("<Configure>", self.resize)
-        # self.bind("<Configure>", self.event_handler)
-        # self.bind('<Enter>', self.event_handler)
-
-        self.last_pointer = 0
-        self.last_event = ''
 
         self.set_runspeed()
-
-        self.update()
         self.resize()
+
+        self.stop()
 
     def createWidgets(self):
         code_text_frame = CodeFrame(self, .02, .1, .5, .85)
@@ -381,16 +371,10 @@ class App(tk.Frame):
 
         self.commands_frame = CommandsFrame(self, .55, .5, .4, .45)
         self.input_entry, self.output_text, self.speed_scale, self.fast_mode = self.commands_frame.set_input_options()
+        self.input_entry.bind('<Key>', self.input_entry_input)
 
-        self.main_frames = [code_text_frame, self.tape_frame, self.commands_frame]
-
-    def event_handler(self, event):
-        current_event = event.type
-        # if self.last_event == tk.EventType.Configure and (current_event == tk.EventType.Enter or self.master.attributes('-zoomed')) \
-        #         or current_event == tk.EventType.Configure and self.master.attributes('-zoomed'):
-        if current_event == tk.EventType.Enter:
-            self.resize()
-        self.last_event = current_event
+        self.main_frames = [code_text_frame,
+                            self.tape_frame, self.commands_frame]
 
     def resize(self, *args):
         self.update()
@@ -399,9 +383,11 @@ class App(tk.Frame):
 
     def init_interpreter(self):
         self.code = self.get_code()
+        self.input_ = self.get_input()
+        self.reset_past_input_spans()
         self.interpreter = BFInterpreter(self.code, self.next_input)
         self.tape_frame.reset()
-        self.past_input_chars = deque()
+        self.reset_output()
 
     def step(self):
         if self.interpreter is None:
@@ -412,7 +398,6 @@ class App(tk.Frame):
         except ExecutionEndedError:
             self.commands_frame.pause_command()
         else:
-            print(self.interpreter.tape)
             self.configure_current(code_pointer)
 
     def run(self):
@@ -430,11 +415,21 @@ class App(tk.Frame):
     def stop(self):
         self.interpreter = None
         self.run_code = False
+        self.last_pointer = 0
+        self.reset_past_input_spans()
+        try:
+            self.reset_hightlights()
+        except AttributeError:
+            # This is because CommandsFrame calls master.stop() when initialised. Should refactor this in the future
+            pass
 
     def pause(self):
         self.run_code = False
 
     def back(self):
+        if self.interpreter.current_instruction == ',':
+            self.highlight_input(self.past_input_spans.pop(),
+                                 self.past_input_spans[-1])
         code_pointer = self.interpreter.back()
         self.configure_current(code_pointer)
 
@@ -456,12 +451,21 @@ class App(tk.Frame):
     def configure_output(self):
         output = self.interpreter.output
         current_output = self.output_text.get('1.0', 'end-1c')
-        if output != current_output:
-            self.output_text.delete('1.0', 'end')
-            self.output_text.insert('1.0', output)
+        if len(output) > len(current_output):
+            self.output_text.configure(state='normal')
+            self.output_text.insert('end', output[-1])
+            self.output_text.configure(state='disabled')
+        elif len(output) < len(current_output):
+            self.output_text.configure(state='normal')
+            self.output_text.delete('end-2c')
+            self.output_text.configure(state='disabled')
+
+    def reset_output(self):
+        self.output_text.configure(state='normal')
+        self.output_text.delete('1.0', 'end')
+        self.output_text.configure(state='disabled')
 
     def set_runspeed(self, *args):
-        """`value` should be an integer between 1 and 100 inclusive"""
         speed_scale = self.speed_scale.get()
         fast_mode = self.fast_mode.get()
         runspeed = (110 - speed_scale) // 10 if fast_mode \
@@ -469,22 +473,52 @@ class App(tk.Frame):
         self.runspeed = runspeed
 
     def get_code(self):
-        code = self.code_text.get('1.0', 'end')
+        code = self.code_text.get('1.0', 'end-1c')
         return code
 
+    def get_input(self):
+        input_ = self.input_entry.get('1.0', 'end-1c')
+        return input_
+
     def next_input(self):
-        input_ = self.input_entry.get()
-        if not input_:
-            return None
-        next_char, *rest = input_
-        if next_char == '\\':
-            second_char, *rest = rest
-            next_char = next_char + second_char
-        self.input_entry.delete(0, len(input_) - len(rest))
-        self.past_input_chars.append(next_char)
-        next_char = codecs.decode(next_char, 'unicode_escape')
-        print(self.past_input_chars)
-        return next_char
+        last_input_span = self.past_input_spans[-1]
+
+        match_obj = re.match(
+            r'^(\\(?:n|r|t|\\|\d{1,3})|.)', self.get_input()[last_input_span[1]:])
+        match = match_obj[0]
+        if len(match) > 1:
+            if match[1].isdecimal():
+                match = chr(int(match[1:]))
+            else:
+                match = codecs.decode(match, 'unicode_escape')
+
+        new_input_span = (last_input_span[1] + match_obj.start(),
+                          last_input_span[1] + match_obj.end())
+
+        self.highlight_input(last_input_span, new_input_span)
+        self.past_input_spans.append(new_input_span)
+
+        return match
+
+    def highlight_input(self, last_input_span, new_input_span):
+        self.input_entry.tag_remove(
+            'highlight', f'1.{last_input_span[0]}', f'1.{last_input_span[1]}')
+        self.input_entry.tag_add(
+            'highlight', f'1.{new_input_span[0]}', f'1.{new_input_span[1]}')
+
+    def input_entry_input(self, event):
+        cursor_position = int(self.input_entry.index('insert')[2:])
+        last_input = self.past_input_spans[-1][1]
+        if event.keysym == 'BackSpace' and cursor_position <= last_input \
+            or cursor_position < last_input:
+            return 'break'
+
+    def reset_past_input_spans(self):
+        self.past_input_spans = deque([(0, 0)])
+
+    def reset_hightlights(self):
+        self.input_entry.tag_remove('highlight', '1.0', 'end')
+        self.code_text.tag_remove('highlight', '1.0', 'end')
 
 
 def main():
