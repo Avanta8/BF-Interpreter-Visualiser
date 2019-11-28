@@ -2,7 +2,7 @@ import codecs
 import re
 import tkinter as tk
 from collections import deque
-from interpreter import BFInterpreter, ExecutionEndedError
+from interpreter import BFInterpreter, ExecutionEndedError, NoPreviousExecutionError
 
 
 class TextLineNumbers(tk.Canvas):
@@ -82,6 +82,7 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
     def create_widgets(self):
         self.text = ScrollbarText(self, wrap='none')
         self.text.tag_configure('highlight', background='grey')
+        self.text.bind('<Tab>', self.tab_to_spaces)
 
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
@@ -93,6 +94,10 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
         code_line_numbers.grid(row=0, column=0, sticky='nesw')
         self.text.vsb.grid(row=0, column=2, sticky='nesw')
         self.text.hsb.grid(row=1, column=1, sticky='nesw')
+
+    def tab_to_spaces(self, event):
+        self.text.insert('insert', '    ')
+        return 'break'
 
 
 class TapeFrame(ResizeFrame):
@@ -197,7 +202,7 @@ class TapeFrame(ResizeFrame):
             self.canvas_frame, width=self.canvas.winfo_width())
 
     def set_cell(self, cell_ind, value):
-        print(cell_ind, value)
+        # print(cell_ind, value)
         try:
             cell = self.cells[cell_ind]
         except IndexError:
@@ -222,6 +227,10 @@ class TapeFrame(ResizeFrame):
         self.cells.append(cell)
         return cell
 
+    def update_cells(self, cell_vals):
+        for i, val in enumerate(cell_vals):
+            self.set_cell(i, val)
+
     def iter_headings(self):
         for heading in self.headings:
             yield heading
@@ -243,7 +252,7 @@ class CommandsFrame(ResizeFrame):
 
     def create_widgets(self):
 
-        self.buttons_frame = ResizeFrame(self, 0, .3, 1, .15)
+        self.buttons_frame = ResizeFrame(self, 0, .3, .85, .15)
         self.run_button = tk.Button(
             self.buttons_frame, text='run', command=self.run_command)
         self.step_button = tk.Button(
@@ -264,11 +273,10 @@ class CommandsFrame(ResizeFrame):
         input_label = tk.Label(input_frame, text='Input:', width=10)
         input_entry = tk.Text(input_frame, height=1, wrap='none')
         input_entry.tag_configure('highlight', background='grey')
-        input_entry.bind('<Return>', lambda e: 'break')
         input_label.pack(side='left')
         input_entry.pack(side='left', fill='x', expand=True)
 
-        scale_frame = ResizeFrame(self, 0, .1, 1, .2)
+        scale_frame = ResizeFrame(self, 0, .1, .85, .2)
         speed_scale = tk.Scale(scale_frame, from_=1, to=100,
                                orient='horizontal', command=self.master.set_runspeed)
         speed_label = tk.Label(scale_frame, text='Speed:', width=10)
@@ -280,16 +288,28 @@ class CommandsFrame(ResizeFrame):
         speed_scale.pack(side='left', fill='x', expand=True)
         speed_checkbutton.pack(side='right', padx=(10, 0))
 
-        output_frame = ResizeFrame(self, 0, .45, 1, .55)
+        output_frame = ResizeFrame(self, 0, .45, .9, .55)
         output_label = tk.Label(output_frame, text='Output:', width=10)
-
         output_text_frame = ScrollTextFrame(output_frame)
         output_text = output_text_frame.text
         output_text.configure(state='disabled')
         output_label.pack()
         output_text_frame.pack(fill='both', expand=True)
 
-        self.frames.extend([input_frame, scale_frame, output_frame])
+        jump_frame = ResizeFrame(self, .86, .09, .14, .41)
+        jump_label = tk.Label(jump_frame, text='Jump:')
+        self.jump_entry = tk.Entry(jump_frame)
+        jump_forwards = tk.Button(
+            jump_frame, text='Forw', command=lambda: self.jump_command(1))
+        jump_backwards = tk.Button(
+            jump_frame, text='Bckw', command=lambda: self.jump_command(-1))
+        jump_label.pack(side='top', fill='both')
+        self.jump_entry.pack(side='top', fill='both')
+        jump_forwards.pack(side='top', fill='both')
+        jump_backwards.pack(side='top', fill='both')
+
+        self.frames.extend(
+            [input_frame, scale_frame, output_frame, jump_frame])
 
         return input_entry, output_text, speed_scale, speed_fast_mode
 
@@ -333,13 +353,17 @@ class CommandsFrame(ResizeFrame):
         self.grid_button(self.run_button, row=0, column=3)
         self.master.back()
 
+    def jump_command(self, direction):
+        self.pause_command()
+        self.master.jump(int(self.jump_entry.get()) * direction)
+
     def grid_button(self, button, row, column):
         button.grid(row=row, column=column, sticky='nswe', padx=2)
 
     def configure_buttons(self):
         for i in range(4):
             self.buttons_frame.columnconfigure(
-                i, weight=1, minsize=self.winfo_width() / 4)
+                i, weight=1, minsize=self.winfo_width() * .85 / 4)
 
     def resize(self):
         super().resize()
@@ -364,12 +388,12 @@ class App(tk.Frame):
         self.stop()
 
     def createWidgets(self):
-        code_text_frame = CodeFrame(self, .02, .1, .5, .85)
+        code_text_frame = CodeFrame(self, .02, .1, .5, .88)
         self.code_text = code_text_frame.text
 
-        self.tape_frame = TapeFrame(self, .55, .1, .4, .35)
+        self.tape_frame = TapeFrame(self, .54, .1, .44, .35)
 
-        self.commands_frame = CommandsFrame(self, .55, .5, .4, .45)
+        self.commands_frame = CommandsFrame(self, .54, .5, .44, .48)
         self.input_entry, self.output_text, self.speed_scale, self.fast_mode = self.commands_frame.set_input_options()
         self.input_entry.bind('<Key>', self.input_entry_input)
 
@@ -389,16 +413,18 @@ class App(tk.Frame):
         self.tape_frame.reset()
         self.reset_output()
 
-    def step(self):
+    def step(self, display=True):
         if self.interpreter is None:
             self.init_interpreter()
 
         try:
-            code_pointer = self.interpreter.step()
+            self.code_pointer = self.interpreter.step()
         except ExecutionEndedError:
             self.commands_frame.pause_command()
-        else:
-            self.configure_current(code_pointer)
+            return False
+        if display:
+            self.configure_current()
+        return True
 
     def run(self):
         if self.interpreter is None:
@@ -426,23 +452,40 @@ class App(tk.Frame):
     def pause(self):
         self.run_code = False
 
-    def back(self):
-        if self.interpreter.current_instruction == ',':
+    def back(self, display=True):
+        rollback_input = self.interpreter.current_instruction == ','
+        try:
+            self.code_pointer = self.interpreter.back()
+        except NoPreviousExecutionError:
+            return False
+
+        if rollback_input:
             self.highlight_input(self.past_input_spans.pop(),
                                  self.past_input_spans[-1])
-        code_pointer = self.interpreter.back()
-        self.configure_current(code_pointer)
+        if display:
+            self.configure_current()
+        return True
 
-    def configure_current(self, code_pointer):
+    def jump(self, steps):
+        method = self.step if steps > 0 else self.back
+
+        for _ in range(abs(steps)):
+            if not method(False):
+                break
+
+        self.tape_frame.update_cells(self.interpreter.tape)
+        self.configure_current()
+
+    def configure_current(self):
         self.highlight_cell()
         self.configure_output()
-        self.hightlight_text(code_pointer)
+        self.hightlight_text()
 
-    def hightlight_text(self, code_pointer):
+    def hightlight_text(self):
         self.code_text.tag_remove(
             'highlight', f'1.0+{self.last_pointer}c', f'1.0+{self.last_pointer + 1}c')
-        self.code_text.tag_add('highlight', f'1.0+{code_pointer}c')
-        self.last_pointer = code_pointer
+        self.code_text.tag_add('highlight', f'1.0+{self.code_pointer}c')
+        self.last_pointer = self.code_pointer
 
     def highlight_cell(self):
         self.tape_frame.set_cell(
@@ -453,11 +496,13 @@ class App(tk.Frame):
         current_output = self.output_text.get('1.0', 'end-1c')
         if len(output) > len(current_output):
             self.output_text.configure(state='normal')
-            self.output_text.insert('end', output[-1])
+            self.output_text.insert(
+                'end', ''.join(output[len(current_output):]))
             self.output_text.configure(state='disabled')
         elif len(output) < len(current_output):
             self.output_text.configure(state='normal')
-            self.output_text.delete('end-2c')
+            self.output_text.delete(
+                f'end-{len(current_output) - len(output) + 1}c', 'end')
             self.output_text.configure(state='disabled')
 
     def reset_output(self):
@@ -510,7 +555,7 @@ class App(tk.Frame):
         cursor_position = int(self.input_entry.index('insert')[2:])
         last_input = self.past_input_spans[-1][1]
         if event.keysym == 'BackSpace' and cursor_position <= last_input \
-            or cursor_position < last_input:
+                or cursor_position < last_input:
             return 'break'
 
     def reset_past_input_spans(self):
