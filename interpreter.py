@@ -81,7 +81,10 @@ class BFInterpreter:
         self.output += chr(self.current_cell)
 
     def back(self):
-        self.code_pointer, self.tape_pointer, tape_val, self.output = self.past.pop()
+        try:
+            self.code_pointer, self.tape_pointer, tape_val, self.output = self.past.pop()
+        except IndexError:
+            raise NoPreviousExecutionError
         self.tape[self.tape_pointer] = tape_val
         return self.code_pointer
 
@@ -110,13 +113,35 @@ class BFInterpreter:
 class ExecutionEndedError(Exception):
     """Error raised when program has ended but `Interpreter.step` is still called"""
 
+class NoPreviousExecutionError(Exception):
+    """Error raised when `Interpreter.back` is called but it is the first instruction being processed"""
 
 def main():
     quine = """
 Written by Erik Bosman
-->++>+++>+>+>++>>+>+>+++>>+>+>++>+++>+++>+>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>+>+>++>>>+++>>>>>+++>+>>>>>>>>>>>>>>>>>>>>>>+++>>>>>>>++>+++>+++>+>>+++>+++>+>+++>+>+++>+>++>+++>>>+>+>+>+>++>+++>+>+>>+++>>>>>>>+>+>>>+>+>++>+++>+++>+>>+++>+++>+>+++>+>++>+++>++>>+>+>++>+++>+>+>>+++>>>+++>+>>>++>+++>+++>+>>+++>>>+++>+>+++>+>>+++>>+++>>+[[>>+[>]+>+[<]<-]>>[>]<+<+++[<]<<+]>>>[>]+++[++++++++++>++[-<++++++++++++++++>]<.<-<]
+->++>+++>+>+>++>>+>+>+++>>+>+>++>+++>+++>+>>>>>>>>>>
+>>>>>>>>>>>>>>>>>>>>>>>+>+>++>>>+++>>>>>+++>+>>>>>>>
+>>>>>>>>>>>>>>>+++>>>>>>>++>+++>+++>+>>+++>+++>+>+++
+>+>+++>+>++>+++>>>+>+>+>+>++>+++>+>+>>+++>>>>>>>+>+>
+>>+>+>++>+++>+++>+>>+++>+++>+>+++>+>++>+++>++>>+>+>+
++>+++>+>+>>+++>>>+++>+>>>++>+++>+++>+>>+++>>>+++>+>+
+++>+>>+++>>+++>>+[[>>+[>]+>+[<]<-]>>[>]<+<+++[<]<<+]
+>>>[>]+++[++++++++++>++[-<++++++++++++++++>]<.<-<]
 """
-    interpreter = BFInterpreter(quine)
+    # interpreter = BFInterpreter(quine)
+
+    squares = """
+      ++++[>+++++<-]>[<+++++>-]+<+[
+    >[>+>+<<-]++>>[<<+>>-]>>>[-]++>[-]+
+    >>>+[[-]++++++>>>]<<<[[<++++++++<++>>-]+<.<[>----<-]<]
+    <<[>>>>>[>>>[-]+++++++++<[>-<-]+++++++++>[-[<->-]+[<<<]]<[>+<-]>]<<-]<<-
+]
+[Outputs square numbers from 0 to 10000.
+Daniel B Cristofani (cristofdathevanetdotcom)
+http://www.hevanet.com/cristofd/brainfuck/]
+"""
+
+    interpreter = BFInterpreter(squares)
     print(interpreter.run())
 
 if __name__ == '__main__':
