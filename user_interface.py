@@ -104,22 +104,50 @@ class TapeFrame(ResizeFrame):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        """
+        NOTE:
+            The code to create headings is hacky AF.
+            Change it ASAP.
+
+        """
+
         self.cells = []
-        self.headings = []
+        self.row_headings = []
+        self.column_headings = []
+
         self.create_frame()
+
         self.reset()
 
     def create_frame(self):
-        self.canvas = tk.Canvas(self)
+
+        self.column_heading_frame = tk.Frame(self)
+        self.column_heading_frame.grid(row=0, column=0, sticky='nesw')
+
+        self.canvas = tk.Canvas(self, highlightthickness=0)
         self.frame = tk.Frame(self.canvas)
         self.vsb = tk.Scrollbar(self, orient="vertical",
                                 command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.vsb.set)
 
-        self.vsb.pack(side="right", fill="y")
-        self.canvas.pack(side="left", fill="both", expand=True)
+        self.canvas.grid(row=1, column=0, sticky='nesw')
+        self.vsb.grid(row=1, column=1, sticky='nesw')
         self.canvas_frame = self.canvas.create_window(
-            0, 0, window=self.frame, anchor="nw")
+            0, 0, window=self.frame, anchor='nw')
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        self.frame.bind('<Configure>', lambda e: self.init_tape())
+
+        self.frame.columnconfigure(0, weight=1)
+
+        # Creates the empty cell at the start of the headings
+        zero_heading = next(self.iter_column_headings())
+        zero_heading.config(state='disabled')
+        zero_heading.grid(row=0, column=0, sticky='nsew')
+        self.column_headings.pop()
+        self.column_heading_frame.columnconfigure(0, weight=1)
 
     def reset(self):
         for cell in self.cells:
@@ -128,15 +156,18 @@ class TapeFrame(ResizeFrame):
         for _ in range(20):
             self.add_cell()
 
-        for heading in self.headings:
+        for heading in self.row_headings + self.column_headings:
             heading.destroy()
-        self.headings = []
+        self.row_headings = []
+        self.column_headings = []
 
         self.last_tape_length = None
         self.last_rows = None
         self.last_columns = None
-        self.last_ind = 0
+        self.last_cell_ind = 0
         self.init_tape()
+
+        self.canvas.yview_moveto(0)
 
     def init_tape(self):
         self.resize_canvas()
@@ -152,12 +183,11 @@ class TapeFrame(ResizeFrame):
             self.create_all_headings(rows, columns)
         self.place_all_cells(columns)
 
-        for i in range(columns + 1):
-            self.frame.columnconfigure(i, weight=1)
-
         self.last_tape_length = self.tape_length
         self.last_rows = rows
         self.last_columns = columns
+
+        self.update()
 
     def place_all_cells(self, columns):
         for i, cell in enumerate(self.cells):
@@ -165,50 +195,45 @@ class TapeFrame(ResizeFrame):
             self.place_cell(cell, row, column)
 
     def place_cell(self, cell, row, column):
-        cell.grid(row=row + 1, column=column + 1, sticky='nsew')
+        cell.grid(row=row, column=column + 1, sticky='nsew')
 
     def create_all_headings(self, rows, columns):
-        positions = [{'row': 0, 'column': x + 1} for x in range(columns)] \
-            + [{'row': y + 1, 'column': 0} for y in range(rows)]
-
-        headings = self.iter_headings()
-
-        for last, (pos, heading) in enumerate(zip(positions, headings)):
-            self.display_heading(heading, **pos, column_count=columns)
-        for heading in self.headings[last + 1:]:
+        column_headings = self.iter_column_headings()
+        for x, heading in zip(range(columns), column_headings):
+            heading.grid(row=0, column=x + 1, sticky='nsew')
+            heading.config(state='normal')
+            heading.delete(0, 'end')
+            heading.insert(0, x)
+            heading.config(state='disabled')
+            self.column_heading_frame.grid_columnconfigure(x + 1, weight=1)
+            self.frame.columnconfigure(x + 1, weight=1)
+        for heading in self.column_headings[x + 1:]:
             heading.grid_forget()
 
-    def display_heading(self, heading, row, column, column_count):
-        heading.grid(row=row, column=column)
-        heading.config(state='normal')
-        heading.delete(0, 'end')
-        heading.insert(0, column - 1 if row == 0 else row * column_count)
-        heading.config(state='disabled')
-
-    def create_heading(self):
-        heading = tk.Entry(self.frame)
-        heading.config(disabledbackground='grey',
-                       disabledforeground='black')
-        self.headings.append(heading)
-        return heading
-
-    def resize(self, *args):
-        super().resize()
-        self.init_tape()
+        row_headings = self.iter_row_headings()
+        for y, heading in zip(range(rows), row_headings):
+            heading.grid(row=y, column=0, sticky='nesw')
+            heading.config(state='normal')
+            heading.delete(0, 'end')
+            heading.insert(0, y * columns)
+            heading.config(state='disabled')
+        for heading in self.row_headings[y + 1:]:
+            heading.grid_forget()
 
     def resize_canvas(self, *args):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         self.canvas.itemconfig(
             self.canvas_frame, width=self.canvas.winfo_width())
 
-    def set_cell(self, cell_ind, value):
-        # print(cell_ind, value)
+    def set_cell(self, cell_ind, value, to_update=True):
         try:
             cell = self.cells[cell_ind]
         except IndexError:
             cell = self.add_cell()
-            self.init_tape()
-        last_cell = self.cells[self.last_ind]
+            if to_update:
+                self.init_tape()
+
+        last_cell = self.cells[self.last_cell_ind]
 
         last_cell.config(disabledbackground='white')
 
@@ -217,7 +242,10 @@ class TapeFrame(ResizeFrame):
         cell.insert(0, value)
         cell.config(state='disabled', disabledbackground='red')
 
-        self.last_ind = cell_ind
+        self.last_cell_ind = cell_ind
+
+        if to_update:
+            self.scroll_to_current()
 
     def add_cell(self):
         cell = tk.Entry(self.frame)
@@ -229,14 +257,40 @@ class TapeFrame(ResizeFrame):
 
     def update_cells(self, cell_vals):
         for i, val in enumerate(cell_vals):
-            self.set_cell(i, val)
+            self.set_cell(i, val, False)
+        self.init_tape()
+        self.scroll_to_current()
 
-    def iter_headings(self):
-        for heading in self.headings:
+    def scroll_to_current(self):
+        cell_row = self.last_cell_ind // self.last_columns
+        print(f'cell row: {cell_row}')
+        offset = cell_row / self.last_rows
+        print(f'offset: {offset}')
+        self.canvas.yview_moveto(offset)
+
+    def iter_column_headings(self):
+        for heading in self.column_headings:
             yield heading
         while True:
-            heading = self.create_heading()
+            heading = tk.Entry(self.column_heading_frame)
+            heading.config(disabledbackground='grey',
+                           disabledforeground='black')
+            self.column_headings.append(heading)
             yield heading
+
+    def iter_row_headings(self):
+        for heading in self.row_headings:
+            yield heading
+        while True:
+            heading = tk.Entry(self.frame)
+            heading.config(disabledbackground='grey',
+                           disabledforeground='black')
+            self.row_headings.append(heading)
+            yield heading
+
+    def resize(self, *args):
+        super().resize()
+        self.init_tape()
 
     @property
     def tape_length(self):
@@ -484,7 +538,8 @@ class App(tk.Frame):
     def hightlight_text(self):
         self.code_text.tag_remove(
             'highlight', f'1.0+{self.last_pointer}c', f'1.0+{self.last_pointer + 1}c')
-        self.code_text.tag_add('highlight', f'1.0+{self.code_pointer}c')
+        if self.code_pointer >= 0:
+            self.code_text.tag_add('highlight', f'1.0+{self.code_pointer}c')
         self.last_pointer = self.code_pointer
 
     def highlight_cell(self):
