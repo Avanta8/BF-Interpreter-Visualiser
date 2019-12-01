@@ -171,10 +171,16 @@ class TapeFrame(ResizeFrame):
 
     def init_tape(self):
         self.resize_canvas()
-        columns = self.winfo_width() // 50
-        if columns == 0:
+        max_columns = self.winfo_width() // 50
+        if max_columns == 0:
             return
-        rows = self.tape_length // columns + 1
+
+        for columns in (20, 10, 5):
+            if max_columns > columns:
+                break
+        else:
+            columns = max_columns
+        rows = self.tape_length // columns + (1 if self.tape_length % columns else 0)
 
         if self.last_tape_length == self.tape_length and self.last_rows == rows and self.last_columns == columns:
             return
@@ -259,14 +265,19 @@ class TapeFrame(ResizeFrame):
         for i, val in enumerate(cell_vals):
             self.set_cell(i, val, False)
         self.init_tape()
-        self.scroll_to_current()
 
     def scroll_to_current(self):
         cell_row = self.last_cell_ind // self.last_columns
-        print(f'cell row: {cell_row}')
         offset = cell_row / self.last_rows
-        print(f'offset: {offset}')
-        self.canvas.yview_moveto(offset)
+        y_top, y_bottom = self.canvas.yview()
+        view_height = y_bottom - y_top
+        row_encompassed = self.last_rows * view_height
+        row_height = view_height / row_encompassed
+
+        if offset < y_top:
+            self.canvas.yview_moveto(offset)
+        elif offset + row_height > y_bottom:
+            self.canvas.yview_moveto(offset - view_height + row_height)
 
     def iter_column_headings(self):
         for heading in self.column_headings:
