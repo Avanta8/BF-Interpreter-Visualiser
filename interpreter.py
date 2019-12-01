@@ -3,7 +3,7 @@ from collections import deque
 
 class BFInterpreter:
 
-    def __init__(self, code, input_func=input, maxlen=None):
+    def __init__(self, code, input_func=input, maxlen=1_000_000):
         self.code = code
         self.input_func = input_func
         self.brackets = self.match_brackets(code)
@@ -36,6 +36,7 @@ class BFInterpreter:
             while self.current_instruction not in self.commands:
                 self.code_pointer += 1
         except IndexError:
+            self.code_pointer -= 1
             raise ExecutionEndedError
 
         code_pointer = self.code_pointer
@@ -75,7 +76,11 @@ class BFInterpreter:
 
     def accept_input(self):
         input_ = self.input_func()
-        self.tape[self.tape_pointer] = ord(input_)
+        if input_:
+            self.tape[self.tape_pointer] = ord(input_)
+        else:
+            self.back()  # Reset back to was it was before
+            raise NoInputError
 
     def add_output(self):
         self.output += chr(self.current_cell)
@@ -115,6 +120,9 @@ class ExecutionEndedError(Exception):
 
 class NoPreviousExecutionError(Exception):
     """Error raised when `Interpreter.back` is called but it is the first instruction being processed"""
+
+class NoInputError(Exception):
+    """Error raised when no input returned from `Interpreter.input_func`"""
 
 def main():
     quine = """

@@ -2,7 +2,11 @@ import codecs
 import re
 import tkinter as tk
 from collections import deque
-from interpreter import BFInterpreter, ExecutionEndedError, NoPreviousExecutionError
+from interpreter import BFInterpreter, ExecutionEndedError, NoPreviousExecutionError, NoInputError
+
+
+class NoNextInputCharError(Exception):
+    """Error raised when there is no next character in input."""
 
 
 class TextLineNumbers(tk.Canvas):
@@ -30,18 +34,25 @@ class TextLineNumbers(tk.Canvas):
 
 
 class ScrollbarText(tk.Text):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, vsb=True, hsb=True, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.create_scrollbars()
+        self.create_scrollbars(vsb, hsb)
 
-    def create_scrollbars(self):
-        self.vsb = tk.Scrollbar(
-            self.master, orient="vertical", command=self.yview)
-        self.hsb = tk.Scrollbar(
-            self.master, orient="horizontal", command=self.xview)
-        self.configure(yscrollcommand=self.vsb.set)
-        self.configure(xscrollcommand=self.hsb.set)
+    def create_scrollbars(self, vsb, hsb):
+        if vsb:
+            self.vsb = tk.Scrollbar(
+                self.master, orient="vertical", command=self.yview)
+            self.configure(yscrollcommand=self.vsb.set)
+        else:
+            self.vsb = None
+
+        if hsb:
+            self.hsb = tk.Scrollbar(
+                self.master, orient="horizontal", command=self.xview)
+            self.configure(xscrollcommand=self.hsb.set)
+        else:
+            self.hsb = None
 
 
 class ResizeFrame(tk.Frame):
@@ -62,38 +73,45 @@ class ResizeFrame(tk.Frame):
 
 class ScrollTextFrame(tk.Frame):
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, vsb=True, hsb=True, **kwargs):
         super().__init__(*args, **kwargs)
 
+        self.has_vsb = vsb
+        self.has_hsb = hsb
+
         self.create_widgets()
+        self.grid_widgets()
 
     def create_widgets(self):
-        self.text = ScrollbarText(self, wrap='none')
+        self.text = ScrollbarText(
+            self, wrap='none', hsb=self.has_hsb, vsb=self.has_vsb, undo=True)
 
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_columnconfigure(0, weight=1)
+    def grid_widgets(self, *, base_column=0, base_row=0):
+        self.grid_rowconfigure(base_row, weight=1)
+        self.grid_columnconfigure(base_column, weight=1)
 
-        self.text.grid(row=0, column=0, sticky='nesw')
-        self.text.vsb.grid(row=0, column=1, sticky='nesw')
-        self.text.hsb.grid(row=1, column=0, sticky='nesw')
+        self.text.grid(row=base_row, column=base_column, sticky='nesw')
+        if self.has_vsb:
+            self.text.vsb.grid(
+                row=base_row, column=base_column + 1, sticky='nesw')
+        if self.has_hsb:
+            self.text.hsb.grid(
+                row=base_row + 1, column=base_column, sticky='nesw')
 
 
 class CodeFrame(ResizeFrame, ScrollTextFrame):
     def create_widgets(self):
-        self.text = ScrollbarText(self, wrap='none')
+        super().create_widgets()
         self.text.tag_configure('highlight', background='grey')
         self.text.bind('<Tab>', self.tab_to_spaces)
 
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_columnconfigure(1, weight=1)
-
-        code_line_numbers = TextLineNumbers(
+        self.code_line_numbers = TextLineNumbers(
             self, textwidget=self.text, width=30)
 
-        self.text.grid(row=0, column=1, sticky='nesw')
-        code_line_numbers.grid(row=0, column=0, sticky='nesw')
-        self.text.vsb.grid(row=0, column=2, sticky='nesw')
-        self.text.hsb.grid(row=1, column=1, sticky='nesw')
+    def grid_widgets(self):
+        super().grid_widgets(base_row=0, base_column=1)
+
+        self.code_line_numbers.grid(row=0, column=0, sticky='nesw')
 
     def tab_to_spaces(self, event):
         self.text.insert('insert', '    ')
@@ -153,13 +171,14 @@ class TapeFrame(ResizeFrame):
         for cell in self.cells:
             cell.destroy()
         self.cells = []
-        for _ in range(20):
-            self.add_cell()
 
         for heading in self.row_headings + self.column_headings:
             heading.destroy()
         self.row_headings = []
         self.column_headings = []
+
+        for _ in range(20):
+            self.add_cell()
 
         self.last_tape_length = None
         self.last_rows = None
@@ -171,16 +190,18 @@ class TapeFrame(ResizeFrame):
 
     def init_tape(self):
         self.resize_canvas()
-        max_columns = self.winfo_width() // 50
-        if max_columns == 0:
-            return
 
+        width = self.canvas.winfo_width()
         for columns in (20, 10, 5):
-            if max_columns > columns:
+            if width / (columns + 1) > 35:
                 break
         else:
-            columns = max_columns
-        rows = self.tape_length // columns + (1 if self.tape_length % columns else 0)
+            columns = width // 35
+            if columns == 0:
+                return
+
+        rows = self.tape_length // columns + \
+            (1 if self.tape_length % columns else 0)
 
         if self.last_tape_length == self.tape_length and self.last_rows == rows and self.last_columns == columns:
             return
@@ -271,8 +292,8 @@ class TapeFrame(ResizeFrame):
         offset = cell_row / self.last_rows
         y_top, y_bottom = self.canvas.yview()
         view_height = y_bottom - y_top
-        row_encompassed = self.last_rows * view_height
-        row_height = view_height / row_encompassed
+        rows_encompassed = self.last_rows * view_height
+        row_height = view_height / rows_encompassed
 
         if offset < y_top:
             self.canvas.yview_moveto(offset)
@@ -299,7 +320,7 @@ class TapeFrame(ResizeFrame):
             self.row_headings.append(heading)
             yield heading
 
-    def resize(self, *args):
+    def resize(self):
         super().resize()
         self.init_tape()
 
@@ -317,7 +338,7 @@ class CommandsFrame(ResizeFrame):
 
     def create_widgets(self):
 
-        self.buttons_frame = ResizeFrame(self, 0, .3, .85, .15)
+        self.buttons_frame = ResizeFrame(self, 0, .35, .85, .15)
         self.run_button = tk.Button(
             self.buttons_frame, text='run', command=self.run_command)
         self.step_button = tk.Button(
@@ -334,14 +355,16 @@ class CommandsFrame(ResizeFrame):
         self.frames = [self.buttons_frame]
 
     def set_input_options(self):
-        input_frame = ResizeFrame(self, 0, 0, 1, .1)
+        input_frame = ResizeFrame(self, 0, 0, 1, .15)
         input_label = tk.Label(input_frame, text='Input:', width=10)
-        input_entry = tk.Text(input_frame, height=1, wrap='none')
+        input_entry_frame = ScrollTextFrame(input_frame, vsb=False)
+        input_entry = input_entry_frame.text
+        input_entry.config(height=1)
         input_entry.tag_configure('highlight', background='grey')
         input_label.pack(side='left')
-        input_entry.pack(side='left', fill='x', expand=True)
+        input_entry_frame.pack(side='left')
 
-        scale_frame = ResizeFrame(self, 0, .1, .85, .2)
+        scale_frame = ResizeFrame(self, 0, .15, .85, .2)
         speed_scale = tk.Scale(scale_frame, from_=1, to=100,
                                orient='horizontal', command=self.master.set_runspeed)
         speed_label = tk.Label(scale_frame, text='Speed:', width=10)
@@ -353,7 +376,7 @@ class CommandsFrame(ResizeFrame):
         speed_scale.pack(side='left', fill='x', expand=True)
         speed_checkbutton.pack(side='right', padx=(10, 0))
 
-        output_frame = ResizeFrame(self, 0, .45, .9, .55)
+        output_frame = ResizeFrame(self, 0, .5, 1, .5)
         output_label = tk.Label(output_frame, text='Output:', width=10)
         output_text_frame = ScrollTextFrame(output_frame)
         output_text = output_text_frame.text
@@ -361,7 +384,7 @@ class CommandsFrame(ResizeFrame):
         output_label.pack()
         output_text_frame.pack(fill='both', expand=True)
 
-        jump_frame = ResizeFrame(self, .86, .09, .14, .41)
+        jump_frame = ResizeFrame(self, .86, .15, .14, .4)
         jump_label = tk.Label(jump_frame, text='Jump:')
         self.jump_entry = tk.Entry(jump_frame)
         jump_forwards = tk.Button(
@@ -438,27 +461,33 @@ class CommandsFrame(ResizeFrame):
 
 
 class App(tk.Frame):
+    """Main frame for the interpreter. Everyting goes in here"""
+
     def __init__(self, master):
+        """Create all widgets. Reset everything."""
         super().__init__(master)
 
-        self.interpreter = None
-
         self.pack(fill='both', expand=True)
-        self.createWidgets()
-        self.bind("<Configure>", self.resize)
+        self.create_widgets()
+        self.bind('<Configure>', self.resize)
 
         self.set_runspeed()
         self.resize()
 
         self.stop()
 
-    def createWidgets(self):
+    def create_widgets(self):
+        """Create the 3 main frames that go in the interpreter.
+        `code_text_frame` -> Where the user types the code to be interpreted,
+        `self.tape_frame` -> The frame where the cells of the tape are displayed,
+        `self.commands_frame` -> The commands for the interpreter eg. run, step, change
+            speed etc. Also where input / output is."""
         code_text_frame = CodeFrame(self, .02, .1, .5, .88)
         self.code_text = code_text_frame.text
 
-        self.tape_frame = TapeFrame(self, .54, .1, .44, .35)
+        self.tape_frame = TapeFrame(self, .54, .1, .44, .3)
 
-        self.commands_frame = CommandsFrame(self, .54, .5, .44, .48)
+        self.commands_frame = CommandsFrame(self, .54, .45, .44, .53)
         self.input_entry, self.output_text, self.speed_scale, self.fast_mode = self.commands_frame.set_input_options()
         self.input_entry.bind('<Key>', self.input_entry_input)
 
@@ -466,33 +495,47 @@ class App(tk.Frame):
                             self.tape_frame, self.commands_frame]
 
     def resize(self, *args):
+        """Called when the screen is resized"""
         self.update()
         for frame in self.main_frames:
             frame.resize()
 
     def init_interpreter(self):
-        self.code = self.get_code()
-        self.input_ = self.get_input()
-        self.reset_past_input_spans()
-        self.interpreter = BFInterpreter(self.code, self.next_input)
-        self.tape_frame.reset()
+        """Reset output text and previous interpreter settings. Then initialise
+        a new `self.interpreter`. Program text is gotten again"""
         self.reset_output()
+        self.reset_past_input_spans()
+        self.reset_hightlights()
+        self.tape_frame.reset()
+        self.last_pointer = 0
+
+        self.interpreter = BFInterpreter(self.get_program_text(), self.get_next_input_char)
 
     def step(self, display=True):
-        if self.interpreter is None:
+        """Step one instruction. If execution has ended, then commands are paused.
+        Change will be displayed if `display` is True. Return True if an
+        instruction was executed else False."""
+        if not self.interpreter:
             self.init_interpreter()
 
         try:
             self.code_pointer = self.interpreter.step()
         except ExecutionEndedError:
+            # Execution has finised
             self.commands_frame.pause_command()
             return False
+        except NoInputError:
+            # No input was given (from `self.input_func`)
+            self.commands_frame.pause_command()
+            return False
+
         if display:
             self.configure_current()
         return True
 
     def run(self):
-        if self.interpreter is None:
+        """Runs instructions until execution is paused or execution has ended."""
+        if not self.interpreter:
             self.init_interpreter()
         self.run_code = True
         self.run_steps()
@@ -501,24 +544,28 @@ class App(tk.Frame):
         if not self.run_code:
             return
         self.step()
+
+        # step again after `self.runspeed` ms
         self.after(self.runspeed, self.run_steps)
 
     def stop(self):
+        """Stop execution. Reset `self.interpreter`."""
         self.interpreter = None
         self.run_code = False
-        self.last_pointer = 0
-        self.reset_past_input_spans()
-        try:
-            self.reset_hightlights()
-        except AttributeError:
-            # This is because CommandsFrame calls master.stop() when initialised. Should refactor this in the future
-            pass
 
     def pause(self):
+        """Pause execution."""
         self.run_code = False
 
     def back(self, display=True):
+        """Step one instruction backwards.
+        Change will be displayed if `display` is True. Return True if
+        stepping backwards was successful else False (no previous instruction)."""
+
+        # Whether input should be rolled back. However, don't rollback if
+        # there is no previous instruction
         rollback_input = self.interpreter.current_instruction == ','
+
         try:
             self.code_pointer = self.interpreter.back()
         except NoPreviousExecutionError:
@@ -532,6 +579,7 @@ class App(tk.Frame):
         return True
 
     def jump(self, steps):
+        """Jump `steps` number of steps forwards if `steps` is positive else backwards."""
         method = self.step if steps > 0 else self.back
 
         for _ in range(abs(steps)):
@@ -542,11 +590,13 @@ class App(tk.Frame):
         self.configure_current()
 
     def configure_current(self):
+        """Configures all the necessary output after a command."""
         self.highlight_cell()
         self.configure_output()
         self.hightlight_text()
 
     def hightlight_text(self):
+        """Remove the hightlighting from the previous command and add the new highlighting."""
         self.code_text.tag_remove(
             'highlight', f'1.0+{self.last_pointer}c', f'1.0+{self.last_pointer + 1}c')
         if self.code_pointer >= 0:
@@ -554,12 +604,18 @@ class App(tk.Frame):
         self.last_pointer = self.code_pointer
 
     def highlight_cell(self):
+        """Highlight the current cell that `self.interpreter.tape_pointer`
+        is pointing to."""
         self.tape_frame.set_cell(
             self.interpreter.tape_pointer, self.interpreter.current_cell)
 
     def configure_output(self):
+        """Make sure the output is correct. If the current output is too short, add
+        the missing characters to the end. If the current output is too long, delete
+        the extra characters."""
         output = self.interpreter.output
         current_output = self.output_text.get('1.0', 'end-1c')
+
         if len(output) > len(current_output):
             self.output_text.configure(state='normal')
             self.output_text.insert(
@@ -572,62 +628,98 @@ class App(tk.Frame):
             self.output_text.configure(state='disabled')
 
     def reset_output(self):
+        """Delete all of the current output."""
         self.output_text.configure(state='normal')
         self.output_text.delete('1.0', 'end')
         self.output_text.configure(state='disabled')
 
     def set_runspeed(self, *args):
+        """Set `self.runspeed` to the current speed to run at (ms between each step).
+        Called if `self.speed_scale` or `self.fast_mode` was changed."""
         speed_scale = self.speed_scale.get()
         fast_mode = self.fast_mode.get()
         runspeed = (110 - speed_scale) // 10 if fast_mode \
             else int(1000 / (speed_scale * speed_scale * .0098 + 1))
         self.runspeed = runspeed
 
-    def get_code(self):
-        code = self.code_text.get('1.0', 'end-1c')
-        return code
+    def get_program_text(self):
+        """Return the current program text."""
+        return self.code_text.get('1.0', 'end-1c')
 
     def get_input(self):
-        input_ = self.input_entry.get('1.0', 'end-1c')
-        return input_
+        """Return the current input"""
+        return self.input_entry.get('1.0', 'end-1c')
 
-    def next_input(self):
-        last_input_span = self.past_input_spans[-1]
+    def get_next_input_char(self):
+        """Return the next character in the input. If there is no next input, return `None`."""
+        last_start, last_end = self.past_input_spans[-1]
 
+        # Get the next character of input starting from the end of the last character of input
         match_obj = re.match(
-            r'^(\\(?:n|r|t|\\|\d{1,3})|.)', self.get_input()[last_input_span[1]:])
+            r'^(\\(?:n|r|t|\\|\d{1,3})|.)', self.get_input()[last_end:])
+        if not match_obj:
+            return None
         match = match_obj[0]
+
+        # A match of length 1 means that the match was just a standard chararacter.
+        # A match of more than length 1 means that the match was an escape sequence
         if len(match) > 1:
             if match[1].isdecimal():
+                # Ascii code
                 match = chr(int(match[1:]))
             else:
+                # Escape character (\n, \r, \t)
                 match = codecs.decode(match, 'unicode_escape')
 
-        new_input_span = (last_input_span[1] + match_obj.start(),
-                          last_input_span[1] + match_obj.end())
+        new_input_span = (last_end + match_obj.start(),
+                          last_end + match_obj.end())
 
-        self.highlight_input(last_input_span, new_input_span)
+        self.highlight_input((last_start, last_end), new_input_span)
         self.past_input_spans.append(new_input_span)
 
         return match
 
     def highlight_input(self, last_input_span, new_input_span):
+        """Remove the hightlighting from `last_input_span` and add
+        highlighting to `new_input_span`."""
         self.input_entry.tag_remove(
             'highlight', f'1.{last_input_span[0]}', f'1.{last_input_span[1]}')
         self.input_entry.tag_add(
             'highlight', f'1.{new_input_span[0]}', f'1.{new_input_span[1]}')
 
     def input_entry_input(self, event):
+        """Event called whenever a key is pressed in `self.input_entry`. Prevent
+        user from adding newlines and deleting input that has already been processed.
+
+        NOTE: This doesn't always work:
+            1 - The user can enter newlines by pasting.
+            2 - The user can delete processed input by creating a selection and
+                moving the cursor in front of the last processed character."""
+
+        if event.keysym == 'Return':
+            # Newlines are 100% not allowed
+            return 'break'
+        if not self.interpreter:
+            # No other restriction if program hasn't started yet
+            return None
+        if event.state != 8 and event.char != '\x16':
+            # Multiple key commands are always allowed as long as it isn't paste
+            return None
+
         cursor_position = int(self.input_entry.index('insert')[2:])
         last_input = self.past_input_spans[-1][1]
+
         if event.keysym == 'BackSpace' and cursor_position <= last_input \
                 or cursor_position < last_input:
             return 'break'
+        return None
 
     def reset_past_input_spans(self):
+        """Reset `self.past_input_spans` to a `deque([(0, 0)])`."""
         self.past_input_spans = deque([(0, 0)])
 
     def reset_hightlights(self):
+        """Removes all highlighting from `self.input_entry` and `self.code_text`."""
         self.input_entry.tag_remove('highlight', '1.0', 'end')
         self.code_text.tag_remove('highlight', '1.0', 'end')
 
@@ -637,6 +729,7 @@ def main():
     root = tk.Tk()
     root.wm_title('BF Interpreter')
     root.geometry('1280x720')
+    root.minsize(690, 570)
 
     App(root)
 
