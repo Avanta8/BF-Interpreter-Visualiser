@@ -1,6 +1,8 @@
 import codecs
 import re
 import tkinter as tk
+import os
+from tkinter import filedialog
 from collections import deque
 from interpreter import BFInterpreter, ExecutionEndedError, NoPreviousExecutionError, NoInputError
 
@@ -10,6 +12,8 @@ class NoNextInputCharError(Exception):
 
 
 class TextLineNumbers(tk.Canvas):
+    """The line numbers for a text widget"""
+
     def __init__(self, *args, textwidget=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.textwidget = textwidget
@@ -33,29 +37,14 @@ class TextLineNumbers(tk.Canvas):
         self.after(10, self.redraw)
 
 
-class ScrollbarText(tk.Text):
-    def __init__(self, *args, vsb=True, hsb=True, **kwargs):
-        super().__init__(*args, **kwargs)
-
-        self.create_scrollbars(vsb, hsb)
-
-    def create_scrollbars(self, vsb, hsb):
-        if vsb:
-            self.vsb = tk.Scrollbar(
-                self.master, orient="vertical", command=self.yview)
-            self.configure(yscrollcommand=self.vsb.set)
-        else:
-            self.vsb = None
-
-        if hsb:
-            self.hsb = tk.Scrollbar(
-                self.master, orient="horizontal", command=self.xview)
-            self.configure(xscrollcommand=self.hsb.set)
-        else:
-            self.hsb = None
-
-
 class ResizeFrame(tk.Frame):
+    """Frame that uses `place` and resizes itself whenever `ResizeFrame.resize` is called.
+    `relx`, `rely` are the top-left coordinates relative to the master widget.
+    `relwidth`, `relheight` are the relative width and height. The position arguments
+    should be between 0 and 1 inclusive. Don't use this frame with `pack` or `grid` and
+    there is no need to `place` it. It places itself automatically whenever
+    `ResizeFrame.resize` is called."""
+
     def __init__(self, master, relx, rely, relwidth, relheight, *args, **kwargs):
         super().__init__(master, *args, **kwargs)
 
@@ -72,6 +61,8 @@ class ResizeFrame(tk.Frame):
 
 
 class ScrollTextFrame(tk.Frame):
+    """Frame that contains a text widget and optional horizonal and/or
+    vertical scrollbars"""
 
     def __init__(self, *args, vsb=True, hsb=True, **kwargs):
         super().__init__(*args, **kwargs)
@@ -83,23 +74,120 @@ class ScrollTextFrame(tk.Frame):
         self.grid_widgets()
 
     def create_widgets(self):
-        self.text = ScrollbarText(
-            self, wrap='none', hsb=self.has_hsb, vsb=self.has_vsb, undo=True)
+        self.text = tk.Text(self, wrap='none', undo=True)
+
+        if self.has_vsb:
+            self.vsb = tk.Scrollbar(
+                self, orient="vertical", command=self.text.yview)
+            self.text.configure(yscrollcommand=self.vsb.set)
+        else:
+            self.vsb = None
+
+        if self.has_hsb:
+            self.hsb = tk.Scrollbar(
+                self, orient="horizontal", command=self.text.xview)
+            self.text.configure(xscrollcommand=self.hsb.set)
+        else:
+            self.hsb = None
 
     def grid_widgets(self, *, base_column=0, base_row=0):
         self.grid_rowconfigure(base_row, weight=1)
         self.grid_columnconfigure(base_column, weight=1)
 
         self.text.grid(row=base_row, column=base_column, sticky='nesw')
-        if self.has_vsb:
-            self.text.vsb.grid(
+        if self.vsb:
+            self.vsb.grid(
                 row=base_row, column=base_column + 1, sticky='nesw')
-        if self.has_hsb:
-            self.text.hsb.grid(
+        if self.hsb:
+            self.hsb.grid(
                 row=base_row + 1, column=base_column, sticky='nesw')
 
 
+class FileFrame(ResizeFrame):
+    """Frame for file handling. Contains 4 buttons: New, Open, Save, Save As."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.create_widgets()
+
+        self.file_types = (('Brainfuck (*.b)', '*.b'), ('All Files', '*.*'))
+        self.current_filename = ''
+
+    def create_widgets(self):
+        """4 buttons: New, Open, Save, Save As."""
+        new_button = tk.Button(
+            self, width=8, text='New', command=self.new_file)
+        open_button = tk.Button(
+            self, width=8, text='Open', command=self.open_file)
+        save_button = tk.Button(
+            self, width=8, text='Save', command=self.save_file)
+        save_as_button = tk.Button(
+            self, width=8, text='Save As', command=self.save_as)
+
+        new_button.grid(row=0, column=0)
+        open_button.grid(row=0, column=1)
+        save_button.grid(row=0, column=2)
+        save_as_button.grid(row=0, column=3)
+
+    def new_file(self):
+        """Create a new blank file."""
+        self.master.load_program_text('')
+        self.current_filename = ''
+        self.rename_window()
+
+    def open_file(self):
+        """Open the selected file. If no file is selected, then do nothing."""
+        filename = filedialog.askopenfilename(filetypes=self.file_types)
+        if not filename:
+            return
+
+        read = self.read_file(filename)
+        self.master.load_program_text(read)
+        self.current_filename = filename
+        self.rename_window()
+
+    def save_file(self):
+        """Save the current file. If the file has not previously been saved,
+        then have the save functionality as save as."""
+        if not self.current_filename:
+            self.save_as()
+            return
+
+        self.write_file(self.current_filename)
+
+    def save_as(self):
+        """Save the file as a new filename. If not filename is selected, then do nothing."""
+        filename = filedialog.asksaveasfilename(
+            filetypes=self.file_types, defaultextension='.*')
+        if not filename:
+            return
+
+        self.write_file(filename)
+        self.current_filename = filename
+        self.rename_window()
+
+    def read_file(self, filename):
+        """Read `filename` and return the contents."""
+        with open(filename, 'r') as file:
+            read = file.read()
+        return read
+
+    def write_file(self, filename):
+        """Get the program text and write that to `filename`."""
+        program_text = self.master.get_program_text()
+        with open(filename, 'w') as file:
+            file.write(program_text)
+
+    def rename_window(self):
+        """Rename the root window based on the current file."""
+        title = f'{os.path.basename(self.current_filename)} - BF' if self.current_filename else 'BF'
+        self.winfo_toplevel().wm_title(title)
+
+
 class CodeFrame(ResizeFrame, ScrollTextFrame):
+    """Frame where the user types their code."""
+
     def create_widgets(self):
         super().create_widgets()
         self.text.tag_configure('highlight', background='grey')
@@ -119,6 +207,8 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
 
 
 class TapeFrame(ResizeFrame):
+    """Frame where the tape and cells are displayed."""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -330,13 +420,35 @@ class TapeFrame(ResizeFrame):
 
 
 class CommandsFrame(ResizeFrame):
+    """Frame containing interpreter commands: run, step, stop, pause, back, jump.
+    Also contains settings: runspeed. Also contains input and output."""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.create_widgets()
-        self.stop_command()
 
     def create_widgets(self):
+        input_frame = ResizeFrame(self, 0, 0, 1, .15)
+        input_label = tk.Label(input_frame, text='Input:', width=10)
+        input_entry_frame = ScrollTextFrame(input_frame, vsb=False)
+        self.input_entry = input_entry_frame.text
+        self.input_entry.config(height=1)
+        self.input_entry.tag_configure('highlight', background='grey')
+        input_label.pack(side='left')
+        input_entry_frame.pack(side='left')
+
+        scale_frame = ResizeFrame(self, 0, .15, .85, .2)
+        self.speed_scale = tk.Scale(scale_frame, from_=1, to=100,
+                                    orient='horizontal', command=self.master.set_runspeed)
+        speed_label = tk.Label(scale_frame, text='Speed:', width=10)
+        self.speed_fast_mode = tk.IntVar()
+        speed_checkbutton = tk.Checkbutton(scale_frame, text='faster',
+                                           variable=self.speed_fast_mode,
+                                           command=self.master.set_runspeed)
+        speed_label.pack(side='left')
+        self.speed_scale.pack(side='left', fill='x', expand=True)
+        speed_checkbutton.pack(side='right', padx=(10, 0))
 
         self.buttons_frame = ResizeFrame(self, 0, .35, .85, .15)
         self.run_button = tk.Button(
@@ -352,35 +464,11 @@ class CommandsFrame(ResizeFrame):
         self.buttons = [self.run_button, self.step_button, self.stop_button,
                         self.pause_button, self.back_button]
 
-        self.frames = [self.buttons_frame]
-
-    def set_input_options(self):
-        input_frame = ResizeFrame(self, 0, 0, 1, .15)
-        input_label = tk.Label(input_frame, text='Input:', width=10)
-        input_entry_frame = ScrollTextFrame(input_frame, vsb=False)
-        input_entry = input_entry_frame.text
-        input_entry.config(height=1)
-        input_entry.tag_configure('highlight', background='grey')
-        input_label.pack(side='left')
-        input_entry_frame.pack(side='left')
-
-        scale_frame = ResizeFrame(self, 0, .15, .85, .2)
-        speed_scale = tk.Scale(scale_frame, from_=1, to=100,
-                               orient='horizontal', command=self.master.set_runspeed)
-        speed_label = tk.Label(scale_frame, text='Speed:', width=10)
-        speed_fast_mode = tk.IntVar()
-        speed_checkbutton = tk.Checkbutton(scale_frame, text='faster',
-                                           variable=speed_fast_mode,
-                                           command=self.master.set_runspeed)
-        speed_label.pack(side='left')
-        speed_scale.pack(side='left', fill='x', expand=True)
-        speed_checkbutton.pack(side='right', padx=(10, 0))
-
         output_frame = ResizeFrame(self, 0, .5, 1, .5)
         output_label = tk.Label(output_frame, text='Output:', width=10)
         output_text_frame = ScrollTextFrame(output_frame)
-        output_text = output_text_frame.text
-        output_text.configure(state='disabled')
+        self.output_text = output_text_frame.text
+        self.output_text.configure(state='disabled')
         output_label.pack()
         output_text_frame.pack(fill='both', expand=True)
 
@@ -396,12 +484,11 @@ class CommandsFrame(ResizeFrame):
         jump_forwards.pack(side='top', fill='both')
         jump_backwards.pack(side='top', fill='both')
 
-        self.frames.extend(
-            [input_frame, scale_frame, output_frame, jump_frame])
-
-        return input_entry, output_text, speed_scale, speed_fast_mode
+        self.frames = [self.buttons_frame, input_frame,
+                       scale_frame, output_frame, jump_frame]
 
     def clear_buttons(self):
+        """Clear all the buttons from the screen."""
         for button in self.buttons:
             button.grid_forget()
 
@@ -443,7 +530,11 @@ class CommandsFrame(ResizeFrame):
 
     def jump_command(self, direction):
         self.pause_command()
-        self.master.jump(int(self.jump_entry.get()) * direction)
+        try:
+            steps = int(self.jump_entry.get())
+        except ValueError:
+            return
+        self.master.jump(steps * direction)
 
     def grid_button(self, button, row, column):
         button.grid(row=row, column=column, sticky='nswe', padx=2)
@@ -459,6 +550,9 @@ class CommandsFrame(ResizeFrame):
             frame.resize()
         self.configure_buttons()
 
+    def get_input_options(self):
+        return self.input_entry, self.output_text, self.speed_scale, self.speed_fast_mode
+
 
 class App(tk.Frame):
     """Main frame for the interpreter. Everyting goes in here"""
@@ -471,27 +565,46 @@ class App(tk.Frame):
         self.create_widgets()
         self.bind('<Configure>', self.resize)
 
+        self.command_highlight = {
+            '[': 'loop',
+            ']': 'loop',
+            '>': 'pointer',
+            '<': 'pointer',
+            '+': 'cell',
+            '-': 'cell',
+            ',': 'io',
+            '.': 'io'
+        }
+
         self.set_runspeed()
         self.resize()
-
-        self.stop()
+        self.file_frame.new_file()
+        self.reset_all()
 
     def create_widgets(self):
-        """Create the 3 main frames that go in the interpreter.
+        """Create the 4 main frames that go in the interpreter.
+        `file_frame` -> File commands: (new, open, save, save as),
         `code_text_frame` -> Where the user types the code to be interpreted,
         `self.tape_frame` -> The frame where the cells of the tape are displayed,
         `self.commands_frame` -> The commands for the interpreter eg. run, step, change
             speed etc. Also where input / output is."""
-        code_text_frame = CodeFrame(self, .02, .1, .5, .88)
-        self.code_text = code_text_frame.text
+
+        self.file_frame = FileFrame(self, .02, .02, .5, .08)
+
+        self.code_text_frame = CodeFrame(self, .02, .1, .5, .88)
+        self.code_text = self.code_text_frame.text
+        self.code_text.bind('<Key>', self.code_text_input)
+        self.code_text.bind('<<Paste>>', self.code_text_paste)
+        for tag, colour in ('comment', 'grey'), ('loop', 'red'), ('io', 'blue'), ('pointer', 'purple'), ('cell', 'green'):
+            self.code_text.tag_configure(tag, foreground=colour)
 
         self.tape_frame = TapeFrame(self, .54, .1, .44, .3)
 
         self.commands_frame = CommandsFrame(self, .54, .45, .44, .53)
-        self.input_entry, self.output_text, self.speed_scale, self.fast_mode = self.commands_frame.set_input_options()
+        self.input_entry, self.output_text, self.speed_scale, self.fast_mode = self.commands_frame.get_input_options()
         self.input_entry.bind('<Key>', self.input_entry_input)
 
-        self.main_frames = [code_text_frame,
+        self.main_frames = [self.file_frame, self.code_text_frame,
                             self.tape_frame, self.commands_frame]
 
     def resize(self, *args):
@@ -503,13 +616,18 @@ class App(tk.Frame):
     def init_interpreter(self):
         """Reset output text and previous interpreter settings. Then initialise
         a new `self.interpreter`. Program text is gotten again"""
+        self.reset_all()
+
+        self.interpreter = BFInterpreter(
+            self.get_program_text(), self.get_next_input_char)
+
+    def reset_all(self):
+        """Reset output text and previous interpreter settings."""
         self.reset_output()
         self.reset_past_input_spans()
         self.reset_hightlights()
         self.tape_frame.reset()
         self.last_pointer = 0
-
-        self.interpreter = BFInterpreter(self.get_program_text(), self.get_next_input_char)
 
     def step(self, display=True):
         """Step one instruction. If execution has ended, then commands are paused.
@@ -534,13 +652,14 @@ class App(tk.Frame):
         return True
 
     def run(self):
-        """Runs instructions until execution is paused or execution has ended."""
+        """Run instructions until execution is paused or execution has ended."""
         if not self.interpreter:
             self.init_interpreter()
         self.run_code = True
         self.run_steps()
 
     def run_steps(self):
+        """`self.step` every `self.runspeed` ms until `self.runcode` is False."""
         if not self.run_code:
             return
         self.step()
@@ -682,10 +801,42 @@ class App(tk.Frame):
     def highlight_input(self, last_input_span, new_input_span):
         """Remove the hightlighting from `last_input_span` and add
         highlighting to `new_input_span`."""
+        print(last_input_span[0])
         self.input_entry.tag_remove(
             'highlight', f'1.{last_input_span[0]}', f'1.{last_input_span[1]}')
         self.input_entry.tag_add(
             'highlight', f'1.{new_input_span[0]}', f'1.{new_input_span[1]}')
+
+    def code_text_input(self, event):
+        """Event called whenever a key is pressed in `self.code_text`. If the character
+        is printable, then insert it with syntax highlighting. Otherwise, allow default
+        behaviour."""
+        char = event.char
+        if not char or not char.isprintable():
+            return False
+
+        self.insert_code_char(char)
+        return 'break'
+
+    def code_text_paste(self, event):
+        """Event called when something is pasted into `self.code_text`. Insert
+        each charater one by one with syntax highlighting."""
+        for char in self.clipboard_get():
+            self.insert_code_char(char)
+        return 'break'
+
+    def insert_code_char(self, char):
+        """Insert `char` with correct syntax highlighting."""
+
+        # If something is currently selected, delete that whole selection
+        # (BTW, this won't work if more than one thing is selected)
+        selection_range = self.code_text.tag_ranges('sel')
+        if selection_range:
+            self.code_text.delete(selection_range[0], selection_range[1])
+
+        self.code_text.insert('insert', char,
+                              self.command_highlight.get(char, 'comment'))
+        return True
 
     def input_entry_input(self, event):
         """Event called whenever a key is pressed in `self.input_entry`. Prevent
@@ -723,11 +874,18 @@ class App(tk.Frame):
         self.input_entry.tag_remove('highlight', '1.0', 'end')
         self.code_text.tag_remove('highlight', '1.0', 'end')
 
+    def load_program_text(self, code):
+        """Writes `code` into `self.code_text`, overwriting everything."""
+        self.commands_frame.stop_command()
+        self.reset_all()
+        self.code_text.delete('1.0', 'end')
+        for char in code:
+            # Insert each character one by one for syntax highlighting
+            self.insert_code_char(char)
+
 
 def main():
-    # root = App()
     root = tk.Tk()
-    root.wm_title('BF Interpreter')
     root.geometry('1280x720')
     root.minsize(690, 570)
 
@@ -738,3 +896,9 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+"""
+TODO:
+    Syntax highlighting doesn't work with undo/redo
+"""
