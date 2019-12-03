@@ -37,6 +37,48 @@ class TextLineNumbers(tk.Canvas):
         self.after(10, self.redraw)
 
 
+class UndoText(tk.Text):
+    def __init__(self, *args, tags_leave=frozenset(), undo=True, **kwargs):
+        super().__init__(*args, undo=True, **kwargs)
+
+        self.tags_leave = tags_leave
+
+        self.bind('<Control-z>', self.text_undo)
+        self.bind('<Control-y>', self.text_redo)
+        self.text_reset()
+
+    def text_undo(self, event):
+
+        self.tags_undo_stack.append(
+            {tag: self.tag_ranges(tag) for tag in self.tag_names()
+            if tag not in self.tags_leave})
+
+        try:
+            self.edit_undo()
+        except tk.TclError:
+            self.tags_undo_stack.pop()
+
+        return 'break'
+
+    def text_redo(self, event):
+        try:
+            self.edit_redo()
+        except tk.TclError:
+            pass
+        else:
+            tags_info = self.tags_undo_stack.pop()
+            for tag, indexes in tags_info.items():
+                self.tag_remove(tag, '1.0')
+                if indexes:
+                    self.tag_add(tag, *indexes)
+
+        return 'break'
+
+    def text_reset(self):
+        self.edit_reset()
+        self.tags_undo_stack = deque()
+
+
 class ResizeFrame(tk.Frame):
     """Frame that uses `place` and resizes itself whenever `ResizeFrame.resize` is called.
     `relx`, `rely` are the top-left coordinates relative to the master widget.
@@ -64,17 +106,17 @@ class ScrollTextFrame(tk.Frame):
     """Frame that contains a text widget and optional horizonal and/or
     vertical scrollbars"""
 
-    def __init__(self, *args, vsb=True, hsb=True, **kwargs):
+    def __init__(self, *args, vsb=True, hsb=True, text_widget_type=tk.Text, text_kwargs={}, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.has_vsb = vsb
         self.has_hsb = hsb
 
-        self.create_widgets()
+        self.create_widgets(text_widget_type, text_kwargs)
         self.grid_widgets()
 
-    def create_widgets(self):
-        self.text = tk.Text(self, wrap='none', undo=True)
+    def create_widgets(self, text_widget_type, text_kwargs):
+        self.text = text_widget_type(self, **text_kwargs)
 
         if self.has_vsb:
             self.vsb = tk.Scrollbar(
@@ -157,7 +199,7 @@ class FileFrame(ResizeFrame):
         self.write_file(self.current_filename)
 
     def save_as(self):
-        """Save the file as a new filename. If not filename is selected, then do nothing."""
+        """Save the file as a new filename. If no filename is selected, then do nothing."""
         filename = filedialog.asksaveasfilename(
             filetypes=self.file_types, defaultextension='.*')
         if not filename:
@@ -188,8 +230,15 @@ class FileFrame(ResizeFrame):
 class CodeFrame(ResizeFrame, ScrollTextFrame):
     """Frame where the user types their code."""
 
-    def create_widgets(self):
-        super().create_widgets()
+    def __init__(self, *args, text_widget_type=UndoText,
+                 text_kwargs={'wrap': 'none', 'undo': True,
+                              'tags_leave': {'sel', 'highlight'}},
+                 **kwargs):
+        super().__init__(*args, text_widget_type=text_widget_type,
+                         text_kwargs=text_kwargs, **kwargs)
+
+    def create_widgets(self, *args, **kwargs):
+        super().create_widgets(*args, **kwargs)
         self.text.tag_configure('highlight', background='grey')
         self.text.bind('<Tab>', self.tab_to_spaces)
 
@@ -431,7 +480,8 @@ class CommandsFrame(ResizeFrame):
     def create_widgets(self):
         input_frame = ResizeFrame(self, 0, 0, 1, .15)
         input_label = tk.Label(input_frame, text='Input:', width=10)
-        input_entry_frame = ScrollTextFrame(input_frame, vsb=False)
+        input_entry_frame = ScrollTextFrame(input_frame, vsb=False, text_kwargs={
+                                            'wrap': 'none', 'undo': True})
         self.input_entry = input_entry_frame.text
         self.input_entry.config(height=1)
         self.input_entry.tag_configure('highlight', background='grey')
@@ -466,7 +516,8 @@ class CommandsFrame(ResizeFrame):
 
         output_frame = ResizeFrame(self, 0, .5, 1, .5)
         output_label = tk.Label(output_frame, text='Output:', width=10)
-        output_text_frame = ScrollTextFrame(output_frame)
+        output_text_frame = ScrollTextFrame(
+            output_frame, text_kwargs={'wrap': 'none'})
         self.output_text = output_text_frame.text
         self.output_text.configure(state='disabled')
         output_label.pack()
@@ -593,8 +644,9 @@ class App(tk.Frame):
 
         self.code_text_frame = CodeFrame(self, .02, .1, .5, .88)
         self.code_text = self.code_text_frame.text
-        self.code_text.bind('<Key>', self.code_text_input)
+        self.code_text.bind('<Control-s>', lambda e: self.file_frame.save_file())
         self.code_text.bind('<<Paste>>', self.code_text_paste)
+        self.code_text.bind('<Key>', self.code_text_input)
         for tag, colour in ('comment', 'grey'), ('loop', 'red'), ('io', 'blue'), ('pointer', 'purple'), ('cell', 'green'):
             self.code_text.tag_configure(tag, foreground=colour)
 
@@ -622,7 +674,7 @@ class App(tk.Frame):
             self.get_program_text(), self.get_next_input_char)
 
     def reset_all(self):
-        """Reset output text and previous interpreter settings."""
+        """Reset output text and previous interpreter settings. Doesn't reset code text."""
         self.reset_output()
         self.reset_past_input_spans()
         self.reset_hightlights()
@@ -765,17 +817,13 @@ class App(tk.Frame):
         """Return the current program text."""
         return self.code_text.get('1.0', 'end-1c')
 
-    def get_input(self):
-        """Return the current input"""
-        return self.input_entry.get('1.0', 'end-1c')
-
     def get_next_input_char(self):
         """Return the next character in the input. If there is no next input, return `None`."""
         last_start, last_end = self.past_input_spans[-1]
 
         # Get the next character of input starting from the end of the last character of input
         match_obj = re.match(
-            r'^(\\(?:n|r|t|\\|\d{1,3})|.)', self.get_input()[last_end:])
+            r'^(\\(?:n|r|t|\\|\d{1,3})|.)', self.input_entry.get(last_end, 'end-1c'))
         if not match_obj:
             return None
         match = match_obj[0]
@@ -790,22 +838,26 @@ class App(tk.Frame):
                 # Escape character (\n, \r, \t)
                 match = codecs.decode(match, 'unicode_escape')
 
-        new_input_span = (last_end + match_obj.start(),
-                          last_end + match_obj.end())
-
-        self.highlight_input((last_start, last_end), new_input_span)
+        new_input_span = (f'{last_end}+{match_obj.start()}c',
+                          f'{last_end}+{match_obj.end()}c')
         self.past_input_spans.append(new_input_span)
+
+        self.highlight_input()
 
         return match
 
-    def highlight_input(self, last_input_span, new_input_span):
+    def highlight_input(self, last_input_span=None, new_input_span=None):
         """Remove the hightlighting from `last_input_span` and add
-        highlighting to `new_input_span`."""
-        print(last_input_span[0])
+        highlighting to `new_input_span`. As default, set `last_input_span`
+        and `new_input_span` to the 2nd last and last past input spans."""
+        if not last_input_span:
+            last_input_span = self.past_input_spans[-2]
+        if not new_input_span:
+            new_input_span = self.past_input_spans[-1]
         self.input_entry.tag_remove(
-            'highlight', f'1.{last_input_span[0]}', f'1.{last_input_span[1]}')
+            'highlight', last_input_span[0], last_input_span[1])
         self.input_entry.tag_add(
-            'highlight', f'1.{new_input_span[0]}', f'1.{new_input_span[1]}')
+            'highlight', new_input_span[0], new_input_span[1])
 
     def code_text_input(self, event):
         """Event called whenever a key is pressed in `self.code_text`. If the character
@@ -813,7 +865,7 @@ class App(tk.Frame):
         behaviour."""
         char = event.char
         if not char or not char.isprintable():
-            return False
+            return None
 
         self.insert_code_char(char)
         return 'break'
@@ -832,11 +884,12 @@ class App(tk.Frame):
         # (BTW, this won't work if more than one thing is selected)
         selection_range = self.code_text.tag_ranges('sel')
         if selection_range:
-            self.code_text.delete(selection_range[0], selection_range[1])
+            if self.code_text.compare('insert', '>=', selection_range[0]) \
+                    and self.code_text.compare('insert', '<=', selection_range[1]):
+                self.code_text.delete(selection_range[0], selection_range[1])
 
         self.code_text.insert('insert', char,
                               self.command_highlight.get(char, 'comment'))
-        return True
 
     def input_entry_input(self, event):
         """Event called whenever a key is pressed in `self.input_entry`. Prevent
@@ -851,23 +904,27 @@ class App(tk.Frame):
             # Newlines are 100% not allowed
             return 'break'
         if not self.interpreter:
-            # No other restriction if program hasn't started yet
             return None
         if event.state != 8 and event.char != '\x16':
             # Multiple key commands are always allowed as long as it isn't paste
             return None
 
-        cursor_position = int(self.input_entry.index('insert')[2:])
+        cursor_position = self.input_entry.index('insert')
         last_input = self.past_input_spans[-1][1]
 
-        if event.keysym == 'BackSpace' and cursor_position <= last_input \
-                or cursor_position < last_input:
+        if event.keysym == 'BackSpace' and self.input_entry.compare(cursor_position, '<=', last_input) \
+                or self.input_entry.compare(cursor_position, '<', last_input):
             return 'break'
         return None
 
+    def insert_entry_char(self, char):
+        """Insert `char`. Replaces newline with \\n"""
+        raise NotImplementedError
+        self.input_entry.insert('insert', char)
+
     def reset_past_input_spans(self):
-        """Reset `self.past_input_spans` to a `deque([(0, 0)])`."""
-        self.past_input_spans = deque([(0, 0)])
+        """Reset `self.past_input_spans` to a `deque([('1.0', '1.0')])`."""
+        self.past_input_spans = deque([('1.0', '1.0')])
 
     def reset_hightlights(self):
         """Removes all highlighting from `self.input_entry` and `self.code_text`."""
@@ -879,6 +936,7 @@ class App(tk.Frame):
         self.commands_frame.stop_command()
         self.reset_all()
         self.code_text.delete('1.0', 'end')
+        self.code_text.edit_reset()
         for char in code:
             # Insert each character one by one for syntax highlighting
             self.insert_code_char(char)
@@ -900,5 +958,9 @@ if __name__ == '__main__':
 
 """
 TODO:
-    Syntax highlighting doesn't work with undo/redo
+    - Star if modifed and not saved
+    - When pasteing into input entry:
+        Insert clipboard char by char. If char is a newline, insert newline escape.
+        Check if anything is selected. If selected, check if the start of the selected is
+            past the last input index or not.
 """
