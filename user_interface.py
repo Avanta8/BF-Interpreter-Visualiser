@@ -1,10 +1,12 @@
 import codecs
+import itertools
 import re
 import tkinter as tk
 import os
 from tkinter import filedialog
 from collections import deque
 from interpreter import BFInterpreter, ExecutionEndedError, NoPreviousExecutionError, NoInputError
+from time import perf_counter as _pc
 
 
 class NoNextInputCharError(Exception):
@@ -37,46 +39,46 @@ class TextLineNumbers(tk.Canvas):
         self.after(10, self.redraw)
 
 
-class UndoText(tk.Text):
-    def __init__(self, *args, tags_leave=frozenset(), undo=True, **kwargs):
-        super().__init__(*args, undo=True, **kwargs)
+class TagText(tk.Text):
+    """Automatically tags everything using `tag_func`"""
+    def __init__(self, *args, tag_func, **kwargs):
+        super().__init__(*args, **kwargs)
 
-        self.tags_leave = tags_leave
+        self.tag_func = tag_func
 
-        self.bind('<Control-z>', self.text_undo)
-        self.bind('<Control-y>', self.text_redo)
-        self.text_reset()
+        self._commands_dict = {
+            'insert': self._insert
+        }
 
-    def text_undo(self, event):
+        self._orig = self._w + '_orig'
+        self.tk.call('rename', self._w, self._orig)
+        self.tk.createcommand(self._w, self._proxy)
 
-        self.tags_undo_stack.append(
-            {tag: self.tag_ranges(tag) for tag in self.tag_names()
-            if tag not in self.tags_leave})
-
+    def _proxy(self, command, *args):
+        # this lets' tkinter handle the command as usual
         try:
-            self.edit_undo()
-        except tk.TclError:
-            self.tags_undo_stack.pop()
+            result = self._commands_dict.get(
+                command, self.tk.call)(self._orig, command, *args)
+        except tk.TclError as e:
+            return
 
-        return 'break'
+        return result
 
-    def text_redo(self, event):
-        try:
-            self.edit_redo()
-        except tk.TclError:
-            pass
-        else:
-            tags_info = self.tags_undo_stack.pop()
-            for tag, indexes in tags_info.items():
-                self.tag_remove(tag, '1.0')
-                if indexes:
-                    self.tag_add(tag, *indexes)
+    def _insert(self, name, command, index, *args):
+        # index = self.index(index)
+        # result = self.tk.call(name, command, index, *args)
+        # for chars in args[::2]:
+        #     for tag_name, *args in self.tag_func(chars):
+        #         self.tag_add(tag_name, *(f'{index}+{ind}c' for ind in args))  # This is really slow
+        # return result
+        if len(args) > 1:
+            raise Exception(f'Tagging for adding more than once thing is not yet supported. length was: {len(args)}, args: {args}')
 
-        return 'break'
+        result = self.tk.call(name, command, index, *self.tag_func(args[0]))
+        # result = self.tk.call(name, command, index, *itertools.chain.from_iterable((c, 'io') for c in args[0]))  # Tester to see speed
+        return result
 
-    def text_reset(self):
-        self.edit_reset()
-        self.tags_undo_stack = deque()
+
 
 
 class ResizeFrame(tk.Frame):
@@ -230,9 +232,8 @@ class FileFrame(ResizeFrame):
 class CodeFrame(ResizeFrame, ScrollTextFrame):
     """Frame where the user types their code."""
 
-    def __init__(self, *args, text_widget_type=UndoText,
-                 text_kwargs={'wrap': 'none', 'undo': True,
-                              'tags_leave': {'sel', 'highlight'}},
+    def __init__(self, *args, text_widget_type=TagText,
+                 text_kwargs={'wrap': 'none', 'undo': True},
                  **kwargs):
         super().__init__(*args, text_widget_type=text_widget_type,
                          text_kwargs=text_kwargs, **kwargs)
@@ -642,11 +643,18 @@ class App(tk.Frame):
 
         self.file_frame = FileFrame(self, .02, .02, .5, .08)
 
-        self.code_text_frame = CodeFrame(self, .02, .1, .5, .88)
+        def tag_func(chars):
+            return itertools.chain.from_iterable((char, self.command_highlight.get(char, 'comment')) for char in chars)
+
+        self.code_text_frame = CodeFrame(self, .02, .1, .5, .88, text_kwargs={
+            'undo': True,
+            'wrap': 'none',
+            'tag_func': tag_func
+        })
+
         self.code_text = self.code_text_frame.text
-        self.code_text.bind('<Control-s>', lambda e: self.file_frame.save_file())
-        self.code_text.bind('<<Paste>>', self.code_text_paste)
-        self.code_text.bind('<Key>', self.code_text_input)
+        self.code_text.bind(
+            '<Control-s>', lambda e: self.file_frame.save_file())
         for tag, colour in ('comment', 'grey'), ('loop', 'red'), ('io', 'blue'), ('pointer', 'purple'), ('cell', 'green'):
             self.code_text.tag_configure(tag, foreground=colour)
 
@@ -771,7 +779,10 @@ class App(tk.Frame):
         self.code_text.tag_remove(
             'highlight', f'1.0+{self.last_pointer}c', f'1.0+{self.last_pointer + 1}c')
         if self.code_pointer >= 0:
-            self.code_text.tag_add('highlight', f'1.0+{self.code_pointer}c')
+            index = f'1.0+{self.code_pointer}c'
+            self.code_text.tag_add('highlight', index)
+            # Scroll to current command if it is offscreen
+            self.code_text.see(index)
         self.last_pointer = self.code_pointer
 
     def highlight_cell(self):
@@ -859,38 +870,6 @@ class App(tk.Frame):
         self.input_entry.tag_add(
             'highlight', new_input_span[0], new_input_span[1])
 
-    def code_text_input(self, event):
-        """Event called whenever a key is pressed in `self.code_text`. If the character
-        is printable, then insert it with syntax highlighting. Otherwise, allow default
-        behaviour."""
-        char = event.char
-        if not char or not char.isprintable():
-            return None
-
-        self.insert_code_char(char)
-        return 'break'
-
-    def code_text_paste(self, event):
-        """Event called when something is pasted into `self.code_text`. Insert
-        each charater one by one with syntax highlighting."""
-        for char in self.clipboard_get():
-            self.insert_code_char(char)
-        return 'break'
-
-    def insert_code_char(self, char):
-        """Insert `char` with correct syntax highlighting."""
-
-        # If something is currently selected, delete that whole selection
-        # (BTW, this won't work if more than one thing is selected)
-        selection_range = self.code_text.tag_ranges('sel')
-        if selection_range:
-            if self.code_text.compare('insert', '>=', selection_range[0]) \
-                    and self.code_text.compare('insert', '<=', selection_range[1]):
-                self.code_text.delete(selection_range[0], selection_range[1])
-
-        self.code_text.insert('insert', char,
-                              self.command_highlight.get(char, 'comment'))
-
     def input_entry_input(self, event):
         """Event called whenever a key is pressed in `self.input_entry`. Prevent
         user from adding newlines and deleting input that has already been processed.
@@ -920,7 +899,7 @@ class App(tk.Frame):
     def insert_entry_char(self, char):
         """Insert `char`. Replaces newline with \\n"""
         raise NotImplementedError
-        self.input_entry.insert('insert', char)
+        # self.input_entry.insert('insert', char)
 
     def reset_past_input_spans(self):
         """Reset `self.past_input_spans` to a `deque([('1.0', '1.0')])`."""
@@ -937,9 +916,7 @@ class App(tk.Frame):
         self.reset_all()
         self.code_text.delete('1.0', 'end')
         self.code_text.edit_reset()
-        for char in code:
-            # Insert each character one by one for syntax highlighting
-            self.insert_code_char(char)
+        self.code_text.insert('1.0', code)
 
 
 def main():
@@ -963,4 +940,8 @@ TODO:
         Insert clipboard char by char. If char is a newline, insert newline escape.
         Check if anything is selected. If selected, check if the start of the selected is
             past the last input index or not.
+    - In TagText, `tag_add` must return a 1d iterable of char - tag pairs that can be unpacked into a suitable argument for tk.Text.insert
+
+    Pasting is now faster. However, Why does undo and redo take so long???? I think its because each individual character
+    is inserted individually. If the same tagged characters were chained, it would be faster i think
 """
