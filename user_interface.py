@@ -1,12 +1,20 @@
 import codecs
 import itertools
 import re
+import string
 import tkinter as tk
 import os
 from tkinter import filedialog
 from collections import deque
 from interpreter import BFInterpreter, ExecutionEndedError, NoPreviousExecutionError, NoInputError
-from time import perf_counter as _pc
+
+
+ASCII_PRINTABLE = set(string.printable)
+CHARS_TO_ESCAPE = {
+    '\n': r'\n',
+    '\t': r'\t',
+    '\r': r'\r'
+}
 
 
 class NoNextInputCharError(Exception):
@@ -35,12 +43,14 @@ class TextLineNumbers(tk.Canvas):
             self.create_text(2, y, anchor='nw', text=linenum)
             i = self.textwidget.index(f'{i}+1line')
 
-        # Refreshes the canvas widget every 10ms
-        self.after(10, self.redraw)
+        # Refreshes the canvas widget every 20ms
+        self.after(20, self.redraw)
 
 
 class TagText(tk.Text):
-    """Automatically tags everything using `tag_func`"""
+    """Automatically tags everything using `tag_func`. `tag_func` must return a 1d iterable
+    of char - tag pairs that can be unpacked into a suitable argument for tk.Text.insert"""
+
     def __init__(self, *args, tag_func, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -55,30 +65,21 @@ class TagText(tk.Text):
         self.tk.createcommand(self._w, self._proxy)
 
     def _proxy(self, command, *args):
-        # this lets' tkinter handle the command as usual
         try:
             result = self._commands_dict.get(
                 command, self.tk.call)(self._orig, command, *args)
-        except tk.TclError as e:
+        except tk.TclError:
             return
 
         return result
 
     def _insert(self, name, command, index, *args):
-        # index = self.index(index)
-        # result = self.tk.call(name, command, index, *args)
-        # for chars in args[::2]:
-        #     for tag_name, *args in self.tag_func(chars):
-        #         self.tag_add(tag_name, *(f'{index}+{ind}c' for ind in args))  # This is really slow
-        # return result
         if len(args) > 1:
-            raise Exception(f'Tagging for adding more than once thing is not yet supported. length was: {len(args)}, args: {args}')
+            raise Exception(
+                f'Tagging for adding more than once thing is not yet supported. length was: {len(args)}, args: {args}')
 
         result = self.tk.call(name, command, index, *self.tag_func(args[0]))
-        # result = self.tk.call(name, command, index, *itertools.chain.from_iterable((c, 'io') for c in args[0]))  # Tester to see speed
         return result
-
-
 
 
 class ResizeFrame(tk.Frame):
@@ -262,13 +263,6 @@ class TapeFrame(ResizeFrame):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        """
-        NOTE:
-            The code to create headings is hacky AF.
-            Change it ASAP.
-
-        """
-
         self.cells = []
         self.row_headings = []
         self.column_headings = []
@@ -300,12 +294,15 @@ class TapeFrame(ResizeFrame):
 
         self.frame.columnconfigure(0, weight=1)
 
-        # Creates the empty cell at the start of the headings
+        # Creates the empty cell at the start of the headings. This should never be used.
         zero_heading = next(self.iter_column_headings())
         zero_heading.config(state='disabled')
         zero_heading.grid(row=0, column=0, sticky='nsew')
         self.column_headings.pop()
-        self.column_heading_frame.columnconfigure(0, weight=1)
+
+        for x in range(21):  # Max columns should be 20. Update this value if that changes
+            self.column_heading_frame.grid_columnconfigure(x, weight=1)
+            self.frame.columnconfigure(x, weight=1)
 
     def reset(self):
         for cell in self.cells:
@@ -340,12 +337,16 @@ class TapeFrame(ResizeFrame):
             if columns == 0:
                 return
 
+        # Don't have an empty extra row at the end if self.tape_length
+        # if divided by columns perfectly
         rows = self.tape_length // columns + \
             (1 if self.tape_length % columns else 0)
 
+        # Don't update if things were the same as last time
         if self.last_tape_length == self.tape_length and self.last_rows == rows and self.last_columns == columns:
             return
 
+        # Don't update headings if they are the same as the previous ones
         if not (self.last_columns == columns and self.last_rows == rows):
             self.create_all_headings(rows, columns)
         self.place_all_cells(columns)
@@ -372,8 +373,6 @@ class TapeFrame(ResizeFrame):
             heading.delete(0, 'end')
             heading.insert(0, x)
             heading.config(state='disabled')
-            self.column_heading_frame.grid_columnconfigure(x + 1, weight=1)
-            self.frame.columnconfigure(x + 1, weight=1)
         for heading in self.column_headings[x + 1:]:
             heading.grid_forget()
 
@@ -482,7 +481,7 @@ class CommandsFrame(ResizeFrame):
         input_frame = ResizeFrame(self, 0, 0, 1, .15)
         input_label = tk.Label(input_frame, text='Input:', width=10)
         input_entry_frame = ScrollTextFrame(input_frame, vsb=False, text_kwargs={
-                                            'wrap': 'none', 'undo': True})
+                                            'wrap': 'none'})
         self.input_entry = input_entry_frame.text
         self.input_entry.config(height=1)
         self.input_entry.tag_configure('highlight', background='grey')
@@ -617,17 +616,6 @@ class App(tk.Frame):
         self.create_widgets()
         self.bind('<Configure>', self.resize)
 
-        self.command_highlight = {
-            '[': 'loop',
-            ']': 'loop',
-            '>': 'pointer',
-            '<': 'pointer',
-            '+': 'cell',
-            '-': 'cell',
-            ',': 'io',
-            '.': 'io'
-        }
-
         self.set_runspeed()
         self.resize()
         self.file_frame.new_file()
@@ -641,27 +629,45 @@ class App(tk.Frame):
         `self.commands_frame` -> The commands for the interpreter eg. run, step, change
             speed etc. Also where input / output is."""
 
+        # Create file frame
         self.file_frame = FileFrame(self, .02, .02, .5, .08)
 
+        # Create code text frame
+        command_highlight = {
+            '[': 'loop',
+            ']': 'loop',
+            '>': 'pointer',
+            '<': 'pointer',
+            '+': 'cell',
+            '-': 'cell',
+            ',': 'io',
+            '.': 'io'
+        }
+
+        # Function for create the correct tag for chars
         def tag_func(chars):
-            return itertools.chain.from_iterable((char, self.command_highlight.get(char, 'comment')) for char in chars)
+            groups = itertools.groupby(
+                chars, key=lambda x: command_highlight.get(x, 'comment'))
+            return itertools.chain.from_iterable((''.join(group), key) for key, group in groups)
 
         self.code_text_frame = CodeFrame(self, .02, .1, .5, .88, text_kwargs={
             'undo': True,
             'wrap': 'none',
             'tag_func': tag_func
         })
-
         self.code_text = self.code_text_frame.text
         self.code_text.bind(
             '<Control-s>', lambda e: self.file_frame.save_file())
         for tag, colour in ('comment', 'grey'), ('loop', 'red'), ('io', 'blue'), ('pointer', 'purple'), ('cell', 'green'):
             self.code_text.tag_configure(tag, foreground=colour)
 
+        # Create tape frame
         self.tape_frame = TapeFrame(self, .54, .1, .44, .3)
 
+        # Create commands frame
         self.commands_frame = CommandsFrame(self, .54, .45, .44, .53)
         self.input_entry, self.output_text, self.speed_scale, self.fast_mode = self.commands_frame.get_input_options()
+        self.input_entry.bind('<Control-v>', self.input_entry_paste)
         self.input_entry.bind('<Key>', self.input_entry_input)
 
         self.main_frames = [self.file_frame, self.code_text_frame,
@@ -731,6 +737,7 @@ class App(tk.Frame):
         """Stop execution. Reset `self.interpreter`."""
         self.interpreter = None
         self.run_code = False
+        self.reset_hightlights()
 
     def pause(self):
         """Pause execution."""
@@ -776,8 +783,7 @@ class App(tk.Frame):
 
     def hightlight_text(self):
         """Remove the hightlighting from the previous command and add the new highlighting."""
-        self.code_text.tag_remove(
-            'highlight', f'1.0+{self.last_pointer}c', f'1.0+{self.last_pointer + 1}c')
+        self.code_text.tag_remove('highlight', f'1.0+{self.last_pointer}c')
         if self.code_pointer >= 0:
             index = f'1.0+{self.code_pointer}c'
             self.code_text.tag_add('highlight', index)
@@ -801,7 +807,7 @@ class App(tk.Frame):
         if len(output) > len(current_output):
             self.output_text.configure(state='normal')
             self.output_text.insert(
-                'end', ''.join(output[len(current_output):]))
+                'end', output[len(current_output):])
             self.output_text.configure(state='disabled')
         elif len(output) < len(current_output):
             self.output_text.configure(state='normal')
@@ -849,8 +855,8 @@ class App(tk.Frame):
                 # Escape character (\n, \r, \t)
                 match = codecs.decode(match, 'unicode_escape')
 
-        new_input_span = (f'{last_end}+{match_obj.start()}c',
-                          f'{last_end}+{match_obj.end()}c')
+        new_input_span = (self.input_entry.index(f'{last_end}+{match_obj.start()}c'),
+                          self.input_entry.index(f'{last_end}+{match_obj.end()}c'))
         self.past_input_spans.append(new_input_span)
 
         self.highlight_input()
@@ -872,34 +878,59 @@ class App(tk.Frame):
 
     def input_entry_input(self, event):
         """Event called whenever a key is pressed in `self.input_entry`. Prevent
-        user from adding newlines and deleting input that has already been processed.
+        user from deleting input that has already been processed."""
 
-        NOTE: This doesn't always work:
-            1 - The user can enter newlines by pasting.
-            2 - The user can delete processed input by creating a selection and
-                moving the cursor in front of the last processed character."""
-
-        if event.keysym == 'Return':
-            # Newlines are 100% not allowed
+        if event.char in ASCII_PRINTABLE:
+            if self.insert_entry_valid('insert'):
+                self.insert_entry_delete_selected()
+                self.insert_entry_char(event.char)
             return 'break'
-        if not self.interpreter:
-            return None
-        if event.state != 8 and event.char != '\x16':
-            # Multiple key commands are always allowed as long as it isn't paste
-            return None
-
-        cursor_position = self.input_entry.index('insert')
-        last_input = self.past_input_spans[-1][1]
-
-        if event.keysym == 'BackSpace' and self.input_entry.compare(cursor_position, '<=', last_input) \
-                or self.input_entry.compare(cursor_position, '<', last_input):
-            return 'break'
+        elif event.keysym == 'BackSpace':
+            # If cursor is on or behind the last input, then disallow the backspace.
+            # Otherwise, allow for default behaviour.
+            if not self.insert_entry_valid('insert-1c'):
+                return 'break'
         return None
 
+    def input_entry_paste(self, event):
+        """Insert each character in the clipboard one by one.  Prevent
+        user from deleting input that has already been processed."""
+        if self.insert_entry_valid('insert'):
+            self.insert_entry_delete_selected()
+            for char in self.input_entry.clipboard_get():
+                self.insert_entry_char(char)
+        return 'break'
+
     def insert_entry_char(self, char):
-        """Insert `char`. Replaces newline with \\n"""
-        raise NotImplementedError
-        # self.input_entry.insert('insert', char)
+        """Insert `char`. Replaces whitespace characters with their escape characters. Eg. newline with \\n"""
+        self.input_entry.insert('insert', CHARS_TO_ESCAPE.get(char, char))
+
+    def insert_entry_valid(self, index):
+        """Return whether it would be valid for a characted to be interted into `self.input_entry` at `index`.
+        An insertion is only valid if that index hasn't yet been processed by the interpreter."""
+        if not self.interpreter:
+            return True
+        last_input = self.past_input_spans[-1][1]
+        if self.input_entry.compare(index, '<', last_input):
+            return False
+        selection_range = self.input_entry.tag_ranges('sel')
+        if selection_range:
+            # Check wether the cursor is within the selection. If it is, then
+            # make sure the selection is in front of the last index.
+            if self.input_entry.compare('insert', '>=', selection_range[0]) \
+                    and self.input_entry.compare('insert', '<=', selection_range[1]) \
+                    and self.input_entry.compare(selection_range[0], '<', last_input):
+                return False
+        return True
+
+    def insert_entry_delete_selected(self):
+        """If text is selected, then delete it if the cursor is within the selection."""
+        selection_range = self.input_entry.tag_ranges('sel')
+        if selection_range:
+            # Only delete if the cursor is within the current selection.
+            if self.input_entry.compare('insert', '>=', selection_range[0]) \
+                    and self.input_entry.compare('insert', '<=', selection_range[1]):
+                self.input_entry.delete(*selection_range)
 
     def reset_past_input_spans(self):
         """Reset `self.past_input_spans` to a `deque([('1.0', '1.0')])`."""
@@ -936,12 +967,4 @@ if __name__ == '__main__':
 """
 TODO:
     - Star if modifed and not saved
-    - When pasteing into input entry:
-        Insert clipboard char by char. If char is a newline, insert newline escape.
-        Check if anything is selected. If selected, check if the start of the selected is
-            past the last input index or not.
-    - In TagText, `tag_add` must return a 1d iterable of char - tag pairs that can be unpacked into a suitable argument for tk.Text.insert
-
-    Pasting is now faster. However, Why does undo and redo take so long???? I think its because each individual character
-    is inserted individually. If the same tagged characters were chained, it would be faster i think
 """
