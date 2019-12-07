@@ -6,7 +6,7 @@ import tkinter as tk
 import os
 from tkinter import filedialog
 from collections import deque
-from interpreter import BFInterpreter, ExecutionEndedError, NoPreviousExecutionError, NoInputError
+from interpreter import BFInterpreter, ExecutionEndedError, NoPreviousExecutionError, NoInputError, ProgramSyntaxError, ErrorTypes
 
 
 ASCII_PRINTABLE = set(string.printable)
@@ -242,6 +242,7 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
     def create_widgets(self, *args, **kwargs):
         super().create_widgets(*args, **kwargs)
         self.text.tag_configure('highlight', background='grey')
+        self.text.tag_configure('error', background='brown')
         self.text.bind('<Tab>', self.tab_to_spaces)
 
         self.code_line_numbers = TextLineNumbers(
@@ -294,7 +295,8 @@ class TapeFrame(ResizeFrame):
 
         self.frame.columnconfigure(0, weight=1)
 
-        # Creates the empty cell at the start of the headings. This should never be used.
+        # Creates the empty cell at the start of the headings.
+        # This cell should never be used. It's just to make the columns fit nicely.
         zero_heading = next(self.iter_column_headings())
         zero_heading.config(state='disabled')
         zero_heading.grid(row=0, column=0, sticky='nsew')
@@ -354,8 +356,6 @@ class TapeFrame(ResizeFrame):
         self.last_tape_length = self.tape_length
         self.last_rows = rows
         self.last_columns = columns
-
-        self.update()
 
     def place_all_cells(self, columns):
         for i, cell in enumerate(self.cells):
@@ -427,6 +427,7 @@ class TapeFrame(ResizeFrame):
         self.init_tape()
 
     def scroll_to_current(self):
+        self.update_idletasks()
         cell_row = self.last_cell_ind // self.last_columns
         offset = cell_row / self.last_rows
         y_top, y_bottom = self.canvas.yview()
@@ -478,6 +479,8 @@ class CommandsFrame(ResizeFrame):
         self.create_widgets()
 
     def create_widgets(self):
+        # instuction_counter_frame = ResizeFrame(self, 0)
+
         input_frame = ResizeFrame(self, 0, 0, 1, .15)
         input_label = tk.Label(input_frame, text='Input:', width=10)
         input_entry_frame = ScrollTextFrame(input_frame, vsb=False, text_kwargs={
@@ -488,14 +491,19 @@ class CommandsFrame(ResizeFrame):
         input_label.pack(side='left')
         input_entry_frame.pack(side='left')
 
-        scale_frame = ResizeFrame(self, 0, .15, .85, .2)
+        scale_frame = ResizeFrame(self, 0, .15, .85, .20)
+        self.instruction_counter_text = tk.StringVar()
+        instruction_label = tk.Label(
+            scale_frame, textvariable=self.instruction_counter_text)
         self.speed_scale = tk.Scale(scale_frame, from_=1, to=100,
-                                    orient='horizontal', command=self.master.set_runspeed)
+                                    orient='horizontal', command=self.master.set_runspeed,
+                                    showvalue=False)
         speed_label = tk.Label(scale_frame, text='Speed:', width=10)
-        self.speed_fast_mode = tk.IntVar()
+        self.speed_fast_mode = tk.BooleanVar()
         speed_checkbutton = tk.Checkbutton(scale_frame, text='faster',
                                            variable=self.speed_fast_mode,
                                            command=self.master.set_runspeed)
+        instruction_label.pack(side='top', anchor='w', expand=True)
         speed_label.pack(side='left')
         self.speed_scale.pack(side='left', fill='x', expand=True)
         speed_checkbutton.pack(side='right', padx=(10, 0))
@@ -604,8 +612,21 @@ class CommandsFrame(ResizeFrame):
     def get_input_options(self):
         return self.input_entry, self.output_text, self.speed_scale, self.speed_fast_mode
 
+    def update_instruction_counter(self, instruction):
+        self.instruction_counter_text.set(
+            f'Current Instruction: {instruction}')
 
-class App(tk.Frame):
+    def set_output_text(self, text):
+        orig_state = self.output_text.cget('state')
+        if orig_state == 'disabled':
+            self.output_text.config(state='normal')
+        self.output_text.delete('1.0', 'end')
+        self.output_text.insert('1.0', text)
+        if orig_state == 'disabled':
+            self.output_text.config(state='disabled')
+
+
+class Brainfuck(tk.Frame):
     """Main frame for the interpreter. Everyting goes in here"""
 
     def __init__(self, master):
@@ -623,11 +644,13 @@ class App(tk.Frame):
 
     def create_widgets(self):
         """Create the 4 main frames that go in the interpreter.
-        `file_frame` -> File commands: (new, open, save, save as),
-        `code_text_frame` -> Where the user types the code to be interpreted,
-        `self.tape_frame` -> The frame where the cells of the tape are displayed,
-        `self.commands_frame` -> The commands for the interpreter eg. run, step, change
-            speed etc. Also where input / output is."""
+
+        Main frames:
+            file_frame -- File commands: (new, open, save, save as),
+            code_text_frame -- Where the user types the code to be interpreted,
+            tape_frame -- The frame where the cells of the tape are displayed,
+            commands_frame -- The commands for the interpreter eg. run, step, change
+                              speed etc. Also where input / output is."""
 
         # Create file frame
         self.file_frame = FileFrame(self, .02, .02, .5, .08)
@@ -653,7 +676,8 @@ class App(tk.Frame):
         self.code_text_frame = CodeFrame(self, .02, .1, .5, .88, text_kwargs={
             'undo': True,
             'wrap': 'none',
-            'tag_func': tag_func
+            'tag_func': tag_func,
+            # 'font': ('Consolas', 10)
         })
         self.code_text = self.code_text_frame.text
         self.code_text.bind(
@@ -665,7 +689,7 @@ class App(tk.Frame):
         self.tape_frame = TapeFrame(self, .54, .1, .44, .3)
 
         # Create commands frame
-        self.commands_frame = CommandsFrame(self, .54, .45, .44, .53)
+        self.commands_frame = CommandsFrame(self, .54, .42, .44, .56)
         self.input_entry, self.output_text, self.speed_scale, self.fast_mode = self.commands_frame.get_input_options()
         self.input_entry.bind('<Control-v>', self.input_entry_paste)
         self.input_entry.bind('<Key>', self.input_entry_input)
@@ -681,26 +705,58 @@ class App(tk.Frame):
 
     def init_interpreter(self):
         """Reset output text and previous interpreter settings. Then initialise
-        a new `self.interpreter`. Program text is gotten again"""
+        a new `self.interpreter`. Program text is gotten again. Return True if
+        initislising new interpreter was successful else False."""
         self.reset_all()
 
-        self.interpreter = BFInterpreter(
-            self.get_program_text(), self.get_next_input_char)
+        try:
+            self.interpreter = BFInterpreter(
+                self.get_program_text(), self.get_next_input_char)
+        except ProgramSyntaxError as error:
+            self.handle_syntax_error(error)
+            return False
+        return True
+
+    def handle_syntax_error(self, error):
+        """Handle syntax error when an interpreter has tried to be initialised."""
+        error_type = error.error
+        if error_type is ErrorTypes.UNMATCHED_OPEN_PAREN:
+            message = 'Unmatched opening parentheses'
+        elif error_type is ErrorTypes.UNMATCHED_CLOSE_PAREN:
+            message = 'Unmatched closing parentheses'
+        else:
+            raise error
+
+        if error.location is not None:
+            location = self.code_text.index(f'1.0+{error.location}c')
+            line, char = map(int, location.split('.'))
+            full_message = f'{message} at: line {line}, char {char + 1}'
+
+            self.commands_frame.set_output_text(full_message)
+            self.code_text.tag_add('error', location)
+            self.code_text.see(location)
+        else:
+            self.commands_frame.set_output_text(message)
 
     def reset_all(self):
-        """Reset output text and previous interpreter settings. Doesn't reset code text."""
+        """Reset output text, previous interpreter settings and instruction count.
+        Doesn't reset code text."""
         self.reset_output()
         self.reset_past_input_spans()
         self.reset_hightlights()
         self.tape_frame.reset()
         self.last_pointer = 0
+        self.commands_frame.update_instruction_counter(0)
 
     def step(self, display=True):
         """Step one instruction. If execution has ended, then commands are paused.
         Change will be displayed if `display` is True. Return True if an
-        instruction was executed else False."""
+        instruction successfully was executed else False."""
         if not self.interpreter:
-            self.init_interpreter()
+            successful = self.init_interpreter()
+            # Return False if not successful in creating new interpreter
+            if not successful:
+                return False
 
         try:
             self.code_pointer = self.interpreter.step()
@@ -720,14 +776,21 @@ class App(tk.Frame):
     def run(self):
         """Run instructions until execution is paused or execution has ended."""
         if not self.interpreter:
-            self.init_interpreter()
+            successful = self.init_interpreter()
+            # Return if not successful in creating new interpreter
+            if not successful:
+                return
         self.run_code = True
         self.run_steps()
 
     def run_steps(self):
-        """`self.step` every `self.runspeed` ms until `self.runcode` is False."""
+        """`self.step` every `self.runspeed` ms until `self.runcode` is False.
+        Step `self.steps_skip` more times if it is non-zero."""
         if not self.run_code:
             return
+
+        for _ in range(self.steps_skip):
+            self.step()
         self.step()
 
         # step again after `self.runspeed` ms
@@ -772,14 +835,17 @@ class App(tk.Frame):
             if not method(False):
                 break
 
-        self.tape_frame.update_cells(self.interpreter.tape)
-        self.configure_current()
+        if self.interpreter:
+            self.tape_frame.update_cells(self.interpreter.tape)
+            self.configure_current()
 
     def configure_current(self):
         """Configures all the necessary output after a command."""
         self.highlight_cell()
         self.configure_output()
         self.hightlight_text()
+        self.commands_frame.update_instruction_counter(
+            self.interpreter.instruction_count)
 
     def hightlight_text(self):
         """Remove the hightlighting from the previous command and add the new highlighting."""
@@ -800,7 +866,7 @@ class App(tk.Frame):
     def configure_output(self):
         """Make sure the output is correct. If the current output is too short, add
         the missing characters to the end. If the current output is too long, delete
-        the extra characters."""
+        the extra characters"""
         output = self.interpreter.output
         current_output = self.output_text.get('1.0', 'end-1c')
 
@@ -826,9 +892,14 @@ class App(tk.Frame):
         Called if `self.speed_scale` or `self.fast_mode` was changed."""
         speed_scale = self.speed_scale.get()
         fast_mode = self.fast_mode.get()
-        runspeed = (110 - speed_scale) // 10 if fast_mode \
-            else int(1000 / (speed_scale * speed_scale * .0098 + 1))
-        self.runspeed = runspeed
+        # runspeed = (110 - speed_scale) // 10 if fast_mode \
+        #     else int(1000 / (speed_scale * speed_scale * .0098 + 1))
+        if fast_mode:
+            self.runspeed = 10
+            self.steps_skip = (speed_scale - 1) // 5
+        else:
+            self.runspeed = int(1000 / (speed_scale * speed_scale * .0098 + 1))
+            self.steps_skip = 0
 
     def get_program_text(self):
         """Return the current program text."""
@@ -875,6 +946,7 @@ class App(tk.Frame):
             'highlight', last_input_span[0], last_input_span[1])
         self.input_entry.tag_add(
             'highlight', new_input_span[0], new_input_span[1])
+        self.input_entry.see(new_input_span[1])
 
     def input_entry_input(self, event):
         """Event called whenever a key is pressed in `self.input_entry`. Prevent
@@ -884,6 +956,7 @@ class App(tk.Frame):
             if self.insert_entry_valid('insert'):
                 self.insert_entry_delete_selected()
                 self.insert_entry_char(event.char)
+                self.input_entry.see('insert')
             return 'break'
         elif event.keysym == 'BackSpace':
             # If cursor is on or behind the last input, then disallow the backspace.
@@ -899,6 +972,7 @@ class App(tk.Frame):
             self.insert_entry_delete_selected()
             for char in self.input_entry.clipboard_get():
                 self.insert_entry_char(char)
+            self.input_entry.see('insert')
         return 'break'
 
     def insert_entry_char(self, char):
@@ -940,6 +1014,7 @@ class App(tk.Frame):
         """Removes all highlighting from `self.input_entry` and `self.code_text`."""
         self.input_entry.tag_remove('highlight', '1.0', 'end')
         self.code_text.tag_remove('highlight', '1.0', 'end')
+        self.code_text.tag_remove('error', '1.0', 'end')
 
     def load_program_text(self, code):
         """Writes `code` into `self.code_text`, overwriting everything."""
@@ -955,7 +1030,7 @@ def main():
     root.geometry('1280x720')
     root.minsize(690, 570)
 
-    App(root)
+    Brainfuck(root)
 
     root.mainloop()
 
@@ -967,4 +1042,5 @@ if __name__ == '__main__':
 """
 TODO:
     - Star if modifed and not saved
+    - Display any error messages in the output box
 """

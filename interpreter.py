@@ -1,7 +1,14 @@
+import enum
 from collections import deque
 
 
+class ErrorTypes(enum.Enum):
+    UNMATCHED_CLOSE_PAREN = enum.auto()
+    UNMATCHED_OPEN_PAREN = enum.auto()
+
+
 class BFInterpreter:
+    """Brainfuck interpreter."""
 
     def __init__(self, code, input_func=input, maxlen=1_000_000):
         self.code = code
@@ -41,6 +48,7 @@ class BFInterpreter:
 
         code_pointer = self.code_pointer
         self.commands[self.current_instruction]()
+        self.instruction_count += 1
 
         return code_pointer
 
@@ -77,7 +85,7 @@ class BFInterpreter:
     def accept_input(self):
         input_ = self.input_func()
         if input_:
-            self.tape[self.tape_pointer] = ord(input_)
+            self.tape[self.tape_pointer] = ord(input_) % 256
         else:
             self.back()  # Reset back to was it was before
             raise NoInputError
@@ -91,6 +99,7 @@ class BFInterpreter:
         except IndexError:
             raise NoPreviousExecutionError
         self.tape[self.tape_pointer] = tape_val
+        self.instruction_count -= 1
         return self.code_pointer
 
     @property
@@ -103,26 +112,48 @@ class BFInterpreter:
 
     @staticmethod
     def match_brackets(code):
-        stack = deque()
+        stack = deque()  # deque is faster than list
         brackets = {}
         for i, char in enumerate(code):
             if char == '[':
                 stack.append(i)
             elif char == ']':
-                match = stack.pop()
+                try:
+                    match = stack.pop()
+                except IndexError:
+                    raise ProgramSyntaxError(ErrorTypes.UNMATCHED_CLOSE_PAREN, i)
                 brackets[match] = i
                 brackets[i] = match
+        if stack:
+            raise ProgramSyntaxError(ErrorTypes.UNMATCHED_OPEN_PAREN, stack[-1])
         return brackets
 
 
-class ExecutionEndedError(Exception):
+class InterpreterError(Exception):
+    """Base class for exceptions to do with an interpreter."""
+
+class ExecutionEndedError(InterpreterError):
     """Error raised when program has ended but `Interpreter.step` is still called"""
 
-class NoPreviousExecutionError(Exception):
+class NoPreviousExecutionError(InterpreterError):
     """Error raised when `Interpreter.back` is called but it is the first instruction being processed"""
 
-class NoInputError(Exception):
+class NoInputError(InterpreterError):
     """Error raised when no input returned from `Interpreter.input_func`"""
+
+class ProgramSyntaxError(InterpreterError):
+    """Error raised when there is a syntax error with the source code of a program.
+    
+    Attributes:
+        error -- Source of error (default to None).
+        location -- Location of error (default to None).
+        message -- Optional mesage (default to None)."""
+
+    def __init__(self, error=None, location=None, message=None):
+        self.error = error
+        self.location = location
+        self.message = message
+
 
 def main():
     quine = """
