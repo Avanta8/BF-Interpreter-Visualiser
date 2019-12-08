@@ -5,6 +5,7 @@ from collections import deque
 class ErrorTypes(enum.Enum):
     UNMATCHED_CLOSE_PAREN = enum.auto()
     UNMATCHED_OPEN_PAREN = enum.auto()
+    INVALID_TAPE_CELL = enum.auto()
 
 
 class BFInterpreter:
@@ -44,11 +45,13 @@ class BFInterpreter:
                 self.code_pointer += 1
         except IndexError:
             self.code_pointer -= 1
+            self.past.pop()
             raise ExecutionEndedError
 
         code_pointer = self.code_pointer
-        self.commands[self.current_instruction]()
         self.instruction_count += 1
+
+        self.commands[self.current_instruction]()
 
         return code_pointer
 
@@ -75,6 +78,10 @@ class BFInterpreter:
 
     def decrement_pointer(self):
         self.tape_pointer -= 1
+        if self.tape_pointer < 0:
+            error_location = self.code_pointer
+            self.back()  # Reset back to was it was before
+            raise ProgramRuntimeError(ErrorTypes.INVALID_TAPE_CELL, error_location)
 
     def increment_cell(self):
         self.tape[self.tape_pointer] = (self.tape[self.tape_pointer] + 1) % 256
@@ -121,29 +128,35 @@ class BFInterpreter:
                 try:
                     match = stack.pop()
                 except IndexError:
-                    raise ProgramSyntaxError(ErrorTypes.UNMATCHED_CLOSE_PAREN, i)
+                    raise ProgramSyntaxError(
+                        ErrorTypes.UNMATCHED_CLOSE_PAREN, i)
                 brackets[match] = i
                 brackets[i] = match
         if stack:
-            raise ProgramSyntaxError(ErrorTypes.UNMATCHED_OPEN_PAREN, stack[-1])
+            raise ProgramSyntaxError(
+                ErrorTypes.UNMATCHED_OPEN_PAREN, stack[-1])
         return brackets
 
 
 class InterpreterError(Exception):
     """Base class for exceptions to do with an interpreter."""
 
+
 class ExecutionEndedError(InterpreterError):
     """Error raised when program has ended but `Interpreter.step` is still called"""
+
 
 class NoPreviousExecutionError(InterpreterError):
     """Error raised when `Interpreter.back` is called but it is the first instruction being processed"""
 
+
 class NoInputError(InterpreterError):
     """Error raised when no input returned from `Interpreter.input_func`"""
 
-class ProgramSyntaxError(InterpreterError):
-    """Error raised when there is a syntax error with the source code of a program.
-    
+
+class ProgramError(InterpreterError):
+    """Error raised when there is something wrong with a program.
+
     Attributes:
         error -- Source of error (default to None).
         location -- Location of error (default to None).
@@ -153,6 +166,14 @@ class ProgramSyntaxError(InterpreterError):
         self.error = error
         self.location = location
         self.message = message
+
+
+class ProgramSyntaxError(ProgramError):
+    """Error raised when there is a syntax error with the source code of a program."""
+
+
+class ProgramRuntimeError(ProgramError):
+    """Error raised when there is a error while the program is running. (Does not include missing input.)"""
 
 
 def main():
@@ -182,6 +203,7 @@ http://www.hevanet.com/cristofd/brainfuck/]
 
     interpreter = BFInterpreter(squares)
     print(interpreter.run())
+
 
 if __name__ == '__main__':
     main()

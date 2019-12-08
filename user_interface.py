@@ -6,7 +6,10 @@ import tkinter as tk
 import os
 from tkinter import filedialog
 from collections import deque
-from interpreter import BFInterpreter, ExecutionEndedError, NoPreviousExecutionError, NoInputError, ProgramSyntaxError, ErrorTypes
+from interpreter import BFInterpreter, ExecutionEndedError, NoPreviousExecutionError, NoInputError, ProgramSyntaxError, ProgramRuntimeError, ErrorTypes
+from timer import Timer
+
+_t1 = Timer()
 
 
 ASCII_PRINTABLE = set(string.printable)
@@ -76,7 +79,8 @@ class TagText(tk.Text):
     def _insert(self, name, command, index, *args):
         if len(args) > 1:
             raise Exception(
-                f'Tagging for adding more than once thing is not yet supported. length was: {len(args)}, args: {args}')
+                'Tagging for adding more than once thing is not yet supported.'
+                f'Arguments length was: {len(args)}, args: {args}')
 
         result = self.tk.call(name, command, index, *self.tag_func(args[0]))
         return result
@@ -234,16 +238,19 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
     """Frame where the user types their code."""
 
     def __init__(self, *args, text_widget_type=TagText,
-                 text_kwargs={'wrap': 'none', 'undo': True},
-                 **kwargs):
+                 text_kwargs={'wrap': 'none'}, **kwargs):
         super().__init__(*args, text_widget_type=text_widget_type,
                          text_kwargs=text_kwargs, **kwargs)
 
     def create_widgets(self, *args, **kwargs):
         super().create_widgets(*args, **kwargs)
+        # These are in order of priority (least to highest)
+        self.text.tag_configure('breakpoint', background='yellow')
         self.text.tag_configure('highlight', background='grey')
         self.text.tag_configure('error', background='brown')
-        self.text.bind('<Tab>', self.tab_to_spaces)
+        self.text.bind('<Tab>', self.add_tab)
+        self.text.bind('<Shift-Tab>', self.remove_tab)
+        self.text.bind('<Return>', self.return_key)
 
         self.code_line_numbers = TextLineNumbers(
             self, textwidget=self.text, width=30)
@@ -253,9 +260,42 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
 
         self.code_line_numbers.grid(row=0, column=0, sticky='nesw')
 
-    def tab_to_spaces(self, event):
-        self.text.insert('insert', '    ')
+    def add_tab(self, event):
+        selected = self.text.tag_ranges('sel')
+        if not selected:
+            self.text.insert('insert', '    ')
+        else:
+            start = int(selected[0].string.split('.')[0])
+            end = int(selected[1].string.split('.')[0])
+            for line in range(start, end + 1):
+                self.text.insert(f'{line}.0', '    ')
+
+            # Inserting breaks the selection so fix the selection
+            self.text.tag_remove('sel', '1.0')
+            self.text.tag_add('sel', f'{selected[0]}+4c', f'{selected[1]}+4c')
         return 'break'
+
+    def remove_tab(self, event):
+        selected = self.text.tag_ranges('sel')
+        if selected:
+            start = int(selected[0].string.split('.')[0])
+            end = int(selected[1].string.split('.')[0])
+        else:
+            start = end = self.text.index('insert').split('.')[0]
+
+        for line in range(start, end + 1):
+            linestart = f'{line}.0'
+            lineend = self.text.index(f'{linestart} lineend')
+            index = self.text.search(
+                '[^ ]', linestart, stopindex=lineend, regexp=True) or lineend
+            col = int(index.split('.')[1])
+            self.text.delete(linestart, f'{line}.{min(col, 4)}')
+
+        # This method seems to work without having to replace the current selection.
+        # However, if it breaks, remove and add the selected tag like in `self.add_tag`
+
+    def return_key(self, event):
+        pass
 
 
 class TapeFrame(ResizeFrame):
@@ -473,14 +513,21 @@ class CommandsFrame(ResizeFrame):
     """Frame containing interpreter commands: run, step, stop, pause, back, jump.
     Also contains settings: runspeed. Also contains input and output."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, max_jump=1_000_000, **kwargs):
         super().__init__(*args, **kwargs)
 
+        self.max_jump = max_jump
         self.create_widgets()
 
-    def create_widgets(self):
-        # instuction_counter_frame = ResizeFrame(self, 0)
+        self._commands = {
+            'run': self._run,
+            'step': self._step,
+            'pause': self._pause,
+            'stop': self._stop,
+            'back': self._back
+        }
 
+    def create_widgets(self):
         input_frame = ResizeFrame(self, 0, 0, 1, .15)
         input_label = tk.Label(input_frame, text='Input:', width=10)
         input_entry_frame = ScrollTextFrame(input_frame, vsb=False, text_kwargs={
@@ -525,13 +572,19 @@ class CommandsFrame(ResizeFrame):
         output_frame = ResizeFrame(self, 0, .5, 1, .5)
         output_label = tk.Label(output_frame, text='Output:', width=10)
         output_text_frame = ScrollTextFrame(
-            output_frame, text_kwargs={'wrap': 'none'})
+            output_frame, text_kwargs={'wrap': 'none', 'state': 'disabled'})
         self.output_text = output_text_frame.text
-        self.output_text.configure(state='disabled')
-        output_label.pack()
-        output_text_frame.pack(fill='both', expand=True)
+        self.error_text_frame = ScrollTextFrame(
+            output_frame, text_kwargs={'wrap': 'none', 'height': 1, 'relief': 'solid', 'state': 'disabled'}, vsb=False)
+        self.error_text = self.error_text_frame.text
+        output_frame.grid_columnconfigure(0, weight=1)
+        output_frame.grid_rowconfigure(1, weight=1)
+        output_label.grid(row=0, column=0, sticky='nesw')
+        output_text_frame.grid(row=1, column=0, sticky='nesw')
+        self.error_text_frame.grid(row=2, column=0, sticky='nesw')
+        self.remove_error_text()  # Start without the error box displayed
 
-        jump_frame = ResizeFrame(self, .86, .15, .14, .4)
+        jump_frame = ResizeFrame(self, .86, .15, .14, .38)
         jump_label = tk.Label(jump_frame, text='Jump:')
         self.jump_entry = tk.Entry(jump_frame)
         jump_forwards = tk.Button(
@@ -551,41 +604,62 @@ class CommandsFrame(ResizeFrame):
         for button in self.buttons:
             button.grid_forget()
 
-    def run_command(self):
+    def reset_buttons(self):
+        """Reset the buttons so how they should start like (run and step)"""
         self.clear_buttons()
+        self.grid_button(self.run_button, row=0, column=0)
+        self.grid_button(self.step_button, row=0, column=1)
+
+    def command_handle(self, command):
+        self.clear_buttons()
+        self.remove_error_text()
+        self._commands[command]()
+
+    def _run(self):
         self.grid_button(self.stop_button, row=0, column=0)
         self.grid_button(self.pause_button, row=0, column=1)
         self.master.run()
 
-    def step_command(self):
-        self.clear_buttons()
+    def _step(self):
         self.grid_button(self.stop_button, row=0, column=0)
         self.grid_button(self.step_button, row=0, column=1)
         self.grid_button(self.back_button, row=0, column=2)
         self.grid_button(self.run_button, row=0, column=3)
         self.master.step()
 
-    def pause_command(self):
-        self.clear_buttons()
+    def _pause(self):
         self.grid_button(self.stop_button, row=0, column=0)
         self.grid_button(self.step_button, row=0, column=1)
         self.grid_button(self.back_button, row=0, column=2)
         self.grid_button(self.run_button, row=0, column=3)
         self.master.pause()
 
-    def stop_command(self):
-        self.clear_buttons()
+    def _stop(self):
         self.grid_button(self.run_button, row=0, column=0)
         self.grid_button(self.step_button, row=0, column=1)
         self.master.stop()
 
-    def back_command(self):
-        self.clear_buttons()
+    def _back(self):
         self.grid_button(self.stop_button, row=0, column=0)
         self.grid_button(self.step_button, row=0, column=1)
         self.grid_button(self.back_button, row=0, column=2)
         self.grid_button(self.run_button, row=0, column=3)
         self.master.back()
+
+    def run_command(self):
+        self.command_handle('run')
+
+    def step_command(self):
+        self.command_handle('step')
+
+    def pause_command(self):
+        self.command_handle('pause')
+
+    def stop_command(self):
+        self.command_handle('stop')
+
+    def back_command(self):
+        self.command_handle('back')
 
     def jump_command(self, direction):
         self.pause_command()
@@ -593,6 +667,11 @@ class CommandsFrame(ResizeFrame):
             steps = int(self.jump_entry.get())
         except ValueError:
             return
+
+        if steps > self.max_jump:
+            steps = self.max_jump
+            self.jump_entry.delete(0, 'end')
+            self.jump_entry.insert(0, str(steps))
         self.master.jump(steps * direction)
 
     def grid_button(self, button, row, column):
@@ -612,18 +691,27 @@ class CommandsFrame(ResizeFrame):
     def get_input_options(self):
         return self.input_entry, self.output_text, self.speed_scale, self.speed_fast_mode
 
-    def update_instruction_counter(self, instruction):
+    def update_instruction_counter(self, instruction_count):
         self.instruction_counter_text.set(
-            f'Current Instruction: {instruction}')
+            f'Current Instruction: {instruction_count:,}')
 
-    def set_output_text(self, text):
-        orig_state = self.output_text.cget('state')
+    def remove_error_text(self):
+        orig_state = self.error_text.cget('state')
         if orig_state == 'disabled':
-            self.output_text.config(state='normal')
-        self.output_text.delete('1.0', 'end')
-        self.output_text.insert('1.0', text)
+            self.error_text.config(state='normal')
+
+        self.error_text_frame.grid_remove()
+        self.error_text.delete('1.0', 'end')
+
         if orig_state == 'disabled':
-            self.output_text.config(state='disabled')
+            self.error_text.config(state='disabled')
+
+    def display_error_text(self, text):
+        self.error_text.configure(state='normal')
+        self.remove_error_text()
+        self.error_text.insert('1.0', text)
+        self.error_text.configure(state='disabled')
+        self.error_text_frame.grid()
 
 
 class Brainfuck(tk.Frame):
@@ -633,13 +721,17 @@ class Brainfuck(tk.Frame):
         """Create all widgets. Reset everything."""
         super().__init__(master)
 
+        self.code_tags_to_remove = []
+
         self.pack(fill='both', expand=True)
         self.create_widgets()
         self.bind('<Configure>', self.resize)
 
         self.set_runspeed()
         self.resize()
+
         self.file_frame.new_file()
+
         self.reset_all()
 
     def create_widgets(self):
@@ -656,7 +748,7 @@ class Brainfuck(tk.Frame):
         self.file_frame = FileFrame(self, .02, .02, .5, .08)
 
         # Create code text frame
-        command_highlight = {
+        self.command_highlights = {
             '[': 'loop',
             ']': 'loop',
             '>': 'pointer',
@@ -670,7 +762,7 @@ class Brainfuck(tk.Frame):
         # Function for create the correct tag for chars
         def tag_func(chars):
             groups = itertools.groupby(
-                chars, key=lambda x: command_highlight.get(x, 'comment'))
+                chars, key=lambda x: self.command_highlights.get(x, 'comment'))
             return itertools.chain.from_iterable((''.join(group), key) for key, group in groups)
 
         self.code_text_frame = CodeFrame(self, .02, .1, .5, .88, text_kwargs={
@@ -682,6 +774,8 @@ class Brainfuck(tk.Frame):
         self.code_text = self.code_text_frame.text
         self.code_text.bind(
             '<Control-s>', lambda e: self.file_frame.save_file())
+        self.code_text.bind('<Key>', self.code_text_input)
+        self.code_text.bind('<Button-3>', self.set_breakpoint)
         for tag, colour in ('comment', 'grey'), ('loop', 'red'), ('io', 'blue'), ('pointer', 'purple'), ('cell', 'green'):
             self.code_text.tag_configure(tag, foreground=colour)
 
@@ -709,34 +803,42 @@ class Brainfuck(tk.Frame):
         initislising new interpreter was successful else False."""
         self.reset_all()
 
+        self.parse_code_text()
         try:
             self.interpreter = BFInterpreter(
                 self.get_program_text(), self.get_next_input_char)
         except ProgramSyntaxError as error:
-            self.handle_syntax_error(error)
+            self.handle_interpreter_error(error)
+            self.commands_frame.reset_buttons()
             return False
+
         return True
 
-    def handle_syntax_error(self, error):
+    def handle_interpreter_error(self, error):
+        """Handle error from interpreter. May be a syntax error or runtime error.
+        These errors do not include missing input."""
         """Handle syntax error when an interpreter has tried to be initialised."""
         error_type = error.error
         if error_type is ErrorTypes.UNMATCHED_OPEN_PAREN:
             message = 'Unmatched opening parentheses'
         elif error_type is ErrorTypes.UNMATCHED_CLOSE_PAREN:
             message = 'Unmatched closing parentheses'
+        elif error_type is ErrorTypes.INVALID_TAPE_CELL:
+            message = 'Tape pointer out of bounds'
         else:
             raise error
 
         if error.location is not None:
-            location = self.code_text.index(f'1.0+{error.location}c')
+            location = self.pointer_to_index[error.location]
             line, char = map(int, location.split('.'))
             full_message = f'{message} at: line {line}, char {char + 1}'
 
-            self.commands_frame.set_output_text(full_message)
+            self.commands_frame.display_error_text(full_message)
             self.code_text.tag_add('error', location)
             self.code_text.see(location)
+            self.code_tags_to_remove.append(('error', location))
         else:
-            self.commands_frame.set_output_text(message)
+            self.commands_frame.display_error_text(message)
 
     def reset_all(self):
         """Reset output text, previous interpreter settings and instruction count.
@@ -745,13 +847,13 @@ class Brainfuck(tk.Frame):
         self.reset_past_input_spans()
         self.reset_hightlights()
         self.tape_frame.reset()
-        self.last_pointer = 0
+        self.code_pointer = -1
         self.commands_frame.update_instruction_counter(0)
 
     def step(self, display=True):
         """Step one instruction. If execution has ended, then commands are paused.
         Change will be displayed if `display` is True. Return True if an
-        instruction successfully was executed else False."""
+        instruction was executed successfully and there is no reason to stop else False."""
         if not self.interpreter:
             successful = self.init_interpreter()
             # Return False if not successful in creating new interpreter
@@ -763,14 +865,25 @@ class Brainfuck(tk.Frame):
         except ExecutionEndedError:
             # Execution has finised
             self.commands_frame.pause_command()
+            self.commands_frame.display_error_text('Execution finished')
             return False
         except NoInputError:
             # No input was given (from `self.input_func`)
             self.commands_frame.pause_command()
+            self.commands_frame.display_error_text('Enter input')
+            return False
+        except ProgramRuntimeError as error:
+            self.commands_frame.pause_command()
+            self.handle_interpreter_error(error)
             return False
 
         if display:
             self.configure_current()
+
+        if self.code_pointer in self.breakpoints:
+            self.commands_frame.pause_command()
+            return False
+
         return True
 
     def run(self):
@@ -790,8 +903,10 @@ class Brainfuck(tk.Frame):
             return
 
         for _ in range(self.steps_skip):
-            self.step()
-        self.step()
+            if not self.step():
+                return
+        if not self.step():
+            return
 
         # step again after `self.runspeed` ms
         self.after(self.runspeed, self.run_steps)
@@ -801,6 +916,7 @@ class Brainfuck(tk.Frame):
         self.interpreter = None
         self.run_code = False
         self.reset_hightlights()
+        self.tape_frame.reset()
 
     def pause(self):
         """Pause execution."""
@@ -809,22 +925,29 @@ class Brainfuck(tk.Frame):
     def back(self, display=True):
         """Step one instruction backwards.
         Change will be displayed if `display` is True. Return True if
-        stepping backwards was successful else False (no previous instruction)."""
+        stepping backwards was successful else False (no previous execution)."""
 
-        # Whether input should be rolled back. However, don't rollback if
-        # there is no previous instruction
-        rollback_input = self.interpreter.current_instruction == ','
-
-        try:
-            self.code_pointer = self.interpreter.back()
-        except NoPreviousExecutionError:
+        if not self.interpreter:
             return False
 
-        if rollback_input:
+        if self.interpreter.instruction_count == 0:
+            self.commands_frame.display_error_text('No previous execution')
+            return False
+
+        # Rollback input if the current command is to take input
+        if self.interpreter.current_instruction == ',':
             self.highlight_input(self.past_input_spans.pop(),
                                  self.past_input_spans[-1])
+
+        self.code_pointer = self.interpreter.back()
+
         if display:
             self.configure_current()
+
+        if self.code_pointer in self.breakpoints:
+            self.commands_frame.pause_command()
+            return False
+
         return True
 
     def jump(self, steps):
@@ -849,13 +972,19 @@ class Brainfuck(tk.Frame):
 
     def hightlight_text(self):
         """Remove the hightlighting from the previous command and add the new highlighting."""
-        self.code_text.tag_remove('highlight', f'1.0+{self.last_pointer}c')
+        self.remove_code_tags()
         if self.code_pointer >= 0:
-            index = f'1.0+{self.code_pointer}c'
+            index = self.pointer_to_index[self.code_pointer]
             self.code_text.tag_add('highlight', index)
             # Scroll to current command if it is offscreen
             self.code_text.see(index)
-        self.last_pointer = self.code_pointer
+            self.code_tags_to_remove.append(('highlight', index))
+
+    def remove_code_tags(self):
+        """Remove all tags in `self.code_tags_to_remove` from `self.code_text`."""
+        for args in self.code_tags_to_remove:
+            self.code_text.tag_remove(*args)
+        self.code_tags_to_remove = []
 
     def highlight_cell(self):
         """Highlight the current cell that `self.interpreter.tape_pointer`
@@ -954,7 +1083,7 @@ class Brainfuck(tk.Frame):
 
         if event.char in ASCII_PRINTABLE:
             if self.insert_entry_valid('insert'):
-                self.insert_entry_delete_selected()
+                self.input_entry_delete_selected()
                 self.insert_entry_char(event.char)
                 self.input_entry.see('insert')
             return 'break'
@@ -969,7 +1098,7 @@ class Brainfuck(tk.Frame):
         """Insert each character in the clipboard one by one.  Prevent
         user from deleting input that has already been processed."""
         if self.insert_entry_valid('insert'):
-            self.insert_entry_delete_selected()
+            self.input_entry_delete_selected()
             for char in self.input_entry.clipboard_get():
                 self.insert_entry_char(char)
             self.input_entry.see('insert')
@@ -997,7 +1126,7 @@ class Brainfuck(tk.Frame):
                 return False
         return True
 
-    def insert_entry_delete_selected(self):
+    def input_entry_delete_selected(self):
         """If text is selected, then delete it if the cursor is within the selection."""
         selection_range = self.input_entry.tag_ranges('sel')
         if selection_range:
@@ -1006,6 +1135,44 @@ class Brainfuck(tk.Frame):
                     and self.input_entry.compare('insert', '<=', selection_range[1]):
                 self.input_entry.delete(*selection_range)
 
+    def code_text_input(self, event):
+        """When a key is pressed in `self.code_text`. If code is running, then disallow
+        the key press. If there is currently an interpreter active, delete it and reset.
+        Remove any code tags if there are any (error and highlight)."""
+        if self.run_code:
+            return 'break'
+        if self.interpreter:
+            self.commands_frame.stop_command()
+            self.reset_all()
+        if self.code_tags_to_remove:
+            self.remove_code_tags()
+        if self.commands_frame.error_text.winfo_ismapped():
+            self.commands_frame.remove_error_text()
+        return None
+
+    def set_breakpoint(self, event):
+        """Called if user right clicked on `self.code_text`. Sets a breakpoint
+        on the nearest character index if it doesn't have a breakpoint. Otherwise, remove
+        the breakpoint. You can only set a breakpoint on a command character (not a comment).
+
+        If there is currently an interpreter running, then also add the index to the current
+        breakpoints. Warning: If `self.code_text` can change when the interpreter is active,
+        then this is likely to break."""
+        index = self.code_text.index(f'@{event.x},{event.y}')
+        char = self.code_text.get(index)
+
+        if char not in self.command_highlights:
+            return  # Breakpoints only allowed on command characters
+
+        if 'breakpoint' in self.code_text.tag_names(index):
+            self.code_text.tag_remove('breakpoint', index)
+            if self.interpreter:
+                self.breakpoints.remove(self.index_to_pointer[index])
+        else:
+            self.code_text.tag_add('breakpoint', index)
+            if self.interpreter:
+                self.breakpoints.add(self.index_to_pointer[index])
+
     def reset_past_input_spans(self):
         """Reset `self.past_input_spans` to a `deque([('1.0', '1.0')])`."""
         self.past_input_spans = deque([('1.0', '1.0')])
@@ -1013,8 +1180,7 @@ class Brainfuck(tk.Frame):
     def reset_hightlights(self):
         """Removes all highlighting from `self.input_entry` and `self.code_text`."""
         self.input_entry.tag_remove('highlight', '1.0', 'end')
-        self.code_text.tag_remove('highlight', '1.0', 'end')
-        self.code_text.tag_remove('error', '1.0', 'end')
+        self.remove_code_tags()
 
     def load_program_text(self, code):
         """Writes `code` into `self.code_text`, overwriting everything."""
@@ -1023,6 +1189,24 @@ class Brainfuck(tk.Frame):
         self.code_text.delete('1.0', 'end')
         self.code_text.edit_reset()
         self.code_text.insert('1.0', code)
+
+    def parse_code_text(self):
+        """Need to think of a better name for this.
+        Creates dicts `self.pointer_to_index` and `self.index_to_poitner` of
+        all pointer to text index pairs and vice-vera. Also stores all breakpoints."""
+        self.pointer_to_index = {}
+        self.index_to_pointer = {}
+        self.breakpoints = set()
+        text = self.get_program_text()
+        pointer = 0
+        index = '1.0'
+        for char in text:
+            self.pointer_to_index[pointer] = index
+            self.index_to_pointer[index] = pointer
+            if 'breakpoint' in self.code_text.tag_names(index):
+                self.breakpoints.add(pointer)
+            pointer += 1
+            index = self.code_text.index(f'{index}+1c')
 
 
 def main():
@@ -1042,5 +1226,11 @@ if __name__ == '__main__':
 """
 TODO:
     - Star if modifed and not saved
-    - Display any error messages in the output box
+    - Return key indents to the same level as the previous indentation
+    - Enter key removes indentation level
+    - Tab, Return, etc. takes priority ahead of Key so Error highlighting is not reset if those keys are pressed
+        Maybe could bind to <Modified> instead.
+    - Stop at breakpoints when jumping backwards too.
+    - If you jump to end of program, then jump to start, the location of the first character creeps upwards.
+        This only happens on some programs. Eg, my Ceaser Cipher. Reason found: Its because of commend at end.
 """
