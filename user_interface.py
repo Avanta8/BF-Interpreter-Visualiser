@@ -7,9 +7,6 @@ import os
 from tkinter import filedialog
 from collections import deque
 from interpreter import BFInterpreter, ExecutionEndedError, NoPreviousExecutionError, NoInputError, ProgramSyntaxError, ProgramRuntimeError, ErrorTypes
-from timer import Timer
-
-_t1 = Timer()
 
 
 ASCII_PRINTABLE = set(string.printable)
@@ -248,9 +245,11 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
         self.text.tag_configure('breakpoint', background='yellow')
         self.text.tag_configure('highlight', background='grey')
         self.text.tag_configure('error', background='brown')
+
         self.text.bind('<Tab>', self.add_tab)
         self.text.bind('<Shift-Tab>', self.remove_tab)
         self.text.bind('<Return>', self.return_key)
+        self.text.bind('<BackSpace>', self.backspace_key)
 
         self.code_line_numbers = TextLineNumbers(
             self, textwidget=self.text, width=30)
@@ -261,6 +260,7 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
         self.code_line_numbers.grid(row=0, column=0, sticky='nesw')
 
     def add_tab(self, event):
+        self.event_generate('<Key>')
         selected = self.text.tag_ranges('sel')
         if not selected:
             self.text.insert('insert', '    ')
@@ -281,21 +281,63 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
             start = int(selected[0].string.split('.')[0])
             end = int(selected[1].string.split('.')[0])
         else:
-            start = end = self.text.index('insert').split('.')[0]
+            start = end = int(self.text.index('insert').split('.')[0])
 
         for line in range(start, end + 1):
-            linestart = f'{line}.0'
-            lineend = self.text.index(f'{linestart} lineend')
-            index = self.text.search(
-                '[^ ]', linestart, stopindex=lineend, regexp=True) or lineend
+            index = self._search_spaces(line)
             col = int(index.split('.')[1])
-            self.text.delete(linestart, f'{line}.{min(col, 4)}')
+            self.text.delete(f'{line}.0', f'{line}.{min(col, 4)}')
 
         # This method seems to work without having to replace the current selection.
         # However, if it breaks, remove and add the selected tag like in `self.add_tag`
 
     def return_key(self, event):
-        pass
+
+        # I still need to make this delete stuff if something is selected but I cba rn.
+
+        self.text.event_generate('<Key>')
+        insert = self.text.index('insert')
+
+        # Find the amount of spaces at the start of the line
+        line = int(insert.split('.')[0])
+        index = self._search_spaces(line)
+        spaces = int(index.split('.')[1])
+
+        # Now insert newline along with the required amount of spaces
+        self.text.insert(insert, '\n' + ' ' * spaces)
+        return 'break'
+
+    def backspace_key(self, event):
+
+        # Allow for default behaviour if anything is selected
+        selected = self.text.tag_ranges('sel')
+        if selected:
+            return None
+
+        insert = self.text.index('insert')
+        line, col = map(int, insert.split('.'))
+        index = self._search_spaces(line)
+
+        # Allow for default behaviour if cursor is at the start of the
+        # line or if there are non-whitespace characters between the start
+        # of the line and the current cursor.
+        if col == 0 or insert != index:
+            return None
+
+        self.text.event_generate('<Key>')  # Now generate <Key> event
+
+        spaces = int(index.split('.')[1])
+        to_delete = spaces % 4 or 4
+        self.text.delete(f'{line}.0', f'{line}.{to_delete}')
+        return 'break'
+
+    def _search_spaces(self, line):
+        """Searches for the first non-space character in `line`"""
+        linestart = f'{line}.0'
+        lineend = self.text.index(f'{linestart} lineend')
+        index = self.text.search(
+            '[^ ]', linestart, stopindex=lineend, regexp=True) or lineend
+        return index
 
 
 class TapeFrame(ResizeFrame):
@@ -847,7 +889,6 @@ class Brainfuck(tk.Frame):
         self.reset_past_input_spans()
         self.reset_hightlights()
         self.tape_frame.reset()
-        self.code_pointer = -1
         self.commands_frame.update_instruction_counter(0)
 
     def step(self, display=True):
@@ -1146,8 +1187,12 @@ class Brainfuck(tk.Frame):
             self.reset_all()
         if self.code_tags_to_remove:
             self.remove_code_tags()
-        if self.commands_frame.error_text.winfo_ismapped():
             self.commands_frame.remove_error_text()
+
+        # Currently, error text will only be displayed if there are tags to remove.
+        # If this changes, use the following command. (I'm not sure how slow it is. Probably test it.)
+        # if self.commands_frame.error_text.winfo_ismapped():
+        #     self.commands_frame.remove_error_text()
         return None
 
     def set_breakpoint(self, event):
@@ -1226,11 +1271,15 @@ if __name__ == '__main__':
 """
 TODO:
     - Star if modifed and not saved
-    - Return key indents to the same level as the previous indentation
-    - Enter key removes indentation level
+
+    - Return key indents to the same level as the previous indentation - Done :)
+    - BS key removes indentation level - Done :)
+
     - Tab, Return, etc. takes priority ahead of Key so Error highlighting is not reset if those keys are pressed
-        Maybe could bind to <Modified> instead.
-    - Stop at breakpoints when jumping backwards too.
+        Maybe could bind to <Modified> instead.  - Done :)
+
+    - Stop at breakpoints when jumping backwards too.  - Done :)
+
     - If you jump to end of program, then jump to start, the location of the first character creeps upwards.
-        This only happens on some programs. Eg, my Ceaser Cipher. Reason found: Its because of commend at end.
+        This only happens on some programs. Eg, my Ceaser Cipher. Reason found: Its because of comment at end. Fixed now :)
 """
