@@ -17,10 +17,6 @@ CHARS_TO_ESCAPE = {
 }
 
 
-class NoNextInputCharError(Exception):
-    """Error raised when there is no next character in input."""
-
-
 class TextLineNumbers(tk.Canvas):
     """The line numbers for a text widget"""
 
@@ -69,7 +65,7 @@ class TagText(tk.Text):
             result = self._commands_dict.get(
                 command, self.tk.call)(self._orig, command, *args)
         except tk.TclError:
-            return
+            return None
 
         return result
 
@@ -124,14 +120,14 @@ class ScrollTextFrame(tk.Frame):
 
         if self.has_vsb:
             self.vsb = tk.Scrollbar(
-                self, orient="vertical", command=self.text.yview)
+                self, orient='vertical', command=self.text.yview)
             self.text.configure(yscrollcommand=self.vsb.set)
         else:
             self.vsb = None
 
         if self.has_hsb:
             self.hsb = tk.Scrollbar(
-                self, orient="horizontal", command=self.text.xview)
+                self, orient='horizontal', command=self.text.xview)
             self.text.configure(xscrollcommand=self.hsb.set)
         else:
             self.hsb = None
@@ -260,14 +256,17 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
         self.code_line_numbers.grid(row=0, column=0, sticky='nesw')
 
     def add_tab(self, event):
-        self.event_generate('<Key>')
+        self.text.event_generate('<Key>', when='now')
         selected = self.text.tag_ranges('sel')
         if not selected:
             self.text.insert('insert', '    ')
         else:
+            # First line of selection
             start = int(selected[0].string.split('.')[0])
+            # Last line of selection
             end = int(selected[1].string.split('.')[0])
             for line in range(start, end + 1):
+                # Insert 4 spaces at the start of every selected line
                 self.text.insert(f'{line}.0', '    ')
 
             # Inserting breaks the selection so fix the selection
@@ -276,11 +275,16 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
         return 'break'
 
     def remove_tab(self, event):
+        self.text.event_generate('<Key>', when='now')
         selected = self.text.tag_ranges('sel')
         if selected:
+            # First line of selection
             start = int(selected[0].string.split('.')[0])
+            # Last line of selection
             end = int(selected[1].string.split('.')[0])
         else:
+            # If nothing is selected, then the first and last line of the selection
+            # is the current line
             start = end = int(self.text.index('insert').split('.')[0])
 
         for line in range(start, end + 1):
@@ -290,12 +294,13 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
 
         # This method seems to work without having to replace the current selection.
         # However, if it breaks, remove and add the selected tag like in `self.add_tag`
+        return 'break'
 
     def return_key(self, event):
+        self.text.event_generate('<Key>', when='now')
 
         # I still need to make this delete stuff if something is selected but I cba rn.
 
-        self.text.event_generate('<Key>')
         insert = self.text.index('insert')
 
         # Find the amount of spaces at the start of the line
@@ -308,6 +313,7 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
         return 'break'
 
     def backspace_key(self, event):
+        self.text.event_generate('<Key>', when='now')
 
         # Allow for default behaviour if anything is selected
         selected = self.text.tag_ranges('sel')
@@ -323,8 +329,6 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
         # of the line and the current cursor.
         if col == 0 or insert != index:
             return None
-
-        self.text.event_generate('<Key>')  # Now generate <Key> event
 
         spaces = int(index.split('.')[1])
         to_delete = spaces % 4 or 4
@@ -817,7 +821,7 @@ class Brainfuck(tk.Frame):
         self.code_text.bind(
             '<Control-s>', lambda e: self.file_frame.save_file())
         self.code_text.bind('<Key>', self.code_text_input)
-        self.code_text.bind('<Button-3>', self.set_breakpoint)
+        self.code_text.bind('<Button-3>', self.set_breakpoint)  # rmb
         for tag, colour in ('comment', 'grey'), ('loop', 'red'), ('io', 'blue'), ('pointer', 'purple'), ('cell', 'green'):
             self.code_text.tag_configure(tag, foreground=colour)
 
@@ -859,7 +863,6 @@ class Brainfuck(tk.Frame):
     def handle_interpreter_error(self, error):
         """Handle error from interpreter. May be a syntax error or runtime error.
         These errors do not include missing input."""
-        """Handle syntax error when an interpreter has tried to be initialised."""
         error_type = error.error
         if error_type is ErrorTypes.UNMATCHED_OPEN_PAREN:
             message = 'Unmatched opening parentheses'
@@ -943,11 +946,9 @@ class Brainfuck(tk.Frame):
         if not self.run_code:
             return
 
-        for _ in range(self.steps_skip):
+        for _ in range(self.steps_skip + 1):
             if not self.step():
                 return
-        if not self.step():
-            return
 
         # step again after `self.runspeed` ms
         self.after(self.runspeed, self.run_steps)
@@ -1023,9 +1024,8 @@ class Brainfuck(tk.Frame):
 
     def remove_code_tags(self):
         """Remove all tags in `self.code_tags_to_remove` from `self.code_text`."""
-        for args in self.code_tags_to_remove:
-            self.code_text.tag_remove(*args)
-        self.code_tags_to_remove = []
+        while self.code_tags_to_remove:
+            self.code_text.tag_remove(*self.code_tags_to_remove.pop())
 
     def highlight_cell(self):
         """Highlight the current cell that `self.interpreter.tape_pointer`
@@ -1202,7 +1202,7 @@ class Brainfuck(tk.Frame):
 
         If there is currently an interpreter running, then also add the index to the current
         breakpoints. Warning: If `self.code_text` can change when the interpreter is active,
-        then this is likely to break."""
+        then this part is likely to break."""
         index = self.code_text.index(f'@{event.x},{event.y}')
         char = self.code_text.get(index)
 
