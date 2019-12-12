@@ -1,5 +1,4 @@
 import enum
-import itertools
 from collections import deque
 
 
@@ -12,9 +11,10 @@ class ErrorTypes(enum.Enum):
 class BFInterpreter:
     """Brainfuck interpreter."""
 
-    def __init__(self, code, input_func=input, maxlen=1_000_000):
+    def __init__(self, code, input_func=input, output_func=None, maxlen=1_000_000):
         self.code = code
         self.input_func = input_func
+        self.output_func = output_func
         self.brackets = self.match_brackets(code)
         self.tape = [0]
         self.tape_pointer = 0
@@ -38,7 +38,7 @@ class BFInterpreter:
             raise ExecutionEndedError
 
         self.past.append((self.code_pointer, self.tape_pointer,
-                          self.tape[self.tape_pointer], self.output))
+                          self.tape[self.tape_pointer], len(self.output)))
 
         self.code_pointer += 1
         try:
@@ -101,12 +101,17 @@ class BFInterpreter:
 
     def add_output(self):
         self.output += chr(self.current_cell)
+        if self.output_func:
+            self.output_func(self.output)
 
     def back(self):
         try:
-            self.code_pointer, self.tape_pointer, tape_val, self.output = self.past.pop()
+            self.code_pointer, self.tape_pointer, tape_val, output_len = self.past.pop()
         except IndexError:
             raise NoPreviousExecutionError
+        if output_len != len(self.output):
+            self.output = self.output[:-1]
+            self.output_func(self.output)
         self.tape[self.tape_pointer] = tape_val
         self.instruction_count -= 1
         return self.code_pointer
@@ -141,9 +146,10 @@ class BFInterpreter:
 
 
 class FastBrainfuckInterpreter:
-    def __init__(self, code, input_func=input):
+    def __init__(self, code, input_func=input, ouput_func=None):
         self.commands, self.brackets = self._compile(code)
         self.input_func = input_func
+        self.output_func = ouput_func
         self.tape = [0] * 30000
         self.command_pointer = 0
         self.tape_pointer = 0
@@ -153,7 +159,6 @@ class FastBrainfuckInterpreter:
         self.running = True
         while self.running:
             command, arg = self.commands[self.command_pointer]
-            # print(command)
             command(arg)
             self.command_pointer += 1
         return ''.join(self.output)
@@ -170,13 +175,16 @@ class FastBrainfuckInterpreter:
         self.tape_pointer += times
 
     def cell_op(self, times):
-        self.tape[self.tape_pointer] = (self.tape[self.tape_pointer] + times) % 256
+        self.tape[self.tape_pointer] = (
+            self.tape[self.tape_pointer] + times) % 256
 
     def accept_input(self, arg):
         self.tape[self.tape_pointer] = ord(self.input_func()) % 256
 
     def add_output(self, arg):
         self.output.append(chr(self.current_cell))
+        if self.output_func:
+            self.output_func(''.join(self.output))
 
     def stop(self, arg):
         self.running = False
@@ -233,7 +241,7 @@ class FastBrainfuckInterpreter:
 
             if char in command_funcs:
                 final_commands.append((command_funcs[char], arg))
-        
+
         final_commands.append((self.stop, None))
 
         return final_commands, brackets
@@ -305,9 +313,9 @@ http://www.hevanet.com/cristofd/brainfuck/]
     # interpreter = BFInterpreter(squares)
     # print(interpreter.run())
 
-    # interpreter = FastBrainfuckInterpreter(squares)
-    # output = interpreter.run()
-    # print(output)
+    interpreter = FastBrainfuckInterpreter(squares)
+    output = interpreter.run()
+    print(output)
 
     mandlebrot = """
  A mandelbrot set fractal viewer in brainfuck written by Erik Bosman
@@ -459,9 +467,10 @@ http://www.hevanet.com/cristofd/brainfuck/]
     # interpreter = BFInterpreter(mandlebrot)
     # print(interpreter.run())
 
-    interpreter = FastBrainfuckInterpreter(mandlebrot)
-    output = interpreter.run()
-    print(output)
+    # interpreter = FastBrainfuckInterpreter(mandlebrot)
+    # output = interpreter.run()
+    # print(output)
+
 
 if __name__ == '__main__':
     main()

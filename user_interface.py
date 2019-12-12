@@ -17,6 +17,52 @@ CHARS_TO_ESCAPE = {
 }
 
 
+class TextUtility:
+    """Class containing staticmethods for helping with tk.Text objects."""
+
+    @staticmethod
+    def get_selected(text):
+        """Return the first and last index of the currently selected
+        text if there is any, otherwise None"""
+        return text.tag_ranges('sel') or None
+
+    @staticmethod
+    def within_selected(text, index='insert'):
+        """Return True/False whether `index` is within the currently selected text.
+        If no text is selected, then return None."""
+        selected = TextUtility.get_selected(text)
+        if not selected:
+            return None
+
+        index = text.index(index)
+
+        return text.compare(index, '>=', selected[0]) \
+            and text.compare(index, '<=', selected[1])
+
+    @staticmethod
+    def delete_selected(text):
+        """If any text is selected, then delete that selection if the cursor is within it.
+        If the cursor is not within the selected text, or if there is no selection,
+        then do nothing."""
+        if TextUtility.within_selected(text):
+            text.delete(*TextUtility.get_selected(text))
+
+    @staticmethod
+    def line_col(index):
+        """Return the line and column of `index` as integers. `index` must be in line.end form."""
+        return tuple(map(int, index.split('.')))
+
+    @staticmethod
+    def line(index):
+        """Return the line of `index` as an integer. `index` must be in line.end form."""
+        return int(index.split('.')[0])
+
+    @staticmethod
+    def col(index):
+        """Return the line of `index` as an integer. `index` must be in line.end form."""
+        return int(index.split('.')[1])
+
+
 class TextLineNumbers(tk.Canvas):
     """The line numbers for a text widget"""
 
@@ -155,6 +201,7 @@ class FileFrame(ResizeFrame):
 
         self.file_types = (('Brainfuck (*.b)', '*.b'), ('All Files', '*.*'))
         self.current_filename = ''
+        self.modified = False
 
     def create_widgets(self):
         """4 buttons: New, Open, Save, Save As."""
@@ -197,6 +244,8 @@ class FileFrame(ResizeFrame):
             return
 
         self.write_file(self.current_filename)
+        self.master.code_text.edit_modified(False)
+        self.rename_window()
 
     def save_as(self):
         """Save the file as a new filename. If no filename is selected, then do nothing."""
@@ -206,6 +255,7 @@ class FileFrame(ResizeFrame):
             return
 
         self.write_file(filename)
+        self.master.code_text.edit_modified(False)
         self.current_filename = filename
         self.rename_window()
 
@@ -223,8 +273,18 @@ class FileFrame(ResizeFrame):
 
     def rename_window(self):
         """Rename the root window based on the current file."""
-        title = f'{os.path.basename(self.current_filename)} - BF' if self.current_filename else 'BF'
+        filename = f'{os.path.basename(self.current_filename)} - BF' if self.current_filename else 'BF'
+        modified = f'{"* " if self.modified else ""}'
+        title = f'{modified}{filename}'
         self.winfo_toplevel().wm_title(title)
+
+    def set_modified(self, value):
+        """If self.modified != value, then set it to `value` and rename the window."""
+        if self.modified == value:
+            return
+
+        self.modified = value
+        self.rename_window()
 
 
 class CodeFrame(ResizeFrame, ScrollTextFrame):
@@ -255,16 +315,30 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
 
         self.code_line_numbers.grid(row=0, column=0, sticky='nesw')
 
+    def event_decorator(func):
+        """Decorator for all key bindings. Call the main <key> binding before
+        running the more specific binding."""
+
+        def wrapper(self, *args, **kwargs):
+            ret_val = self.master.code_text_input()
+            if ret_val == 'break':
+                # We don't want to keep running if 'break' was returned from
+                # the main <key> function
+                return 'break'
+
+            return func(self, *args, **kwargs)
+        return wrapper
+
+    @event_decorator
     def add_tab(self, event):
-        self.text.event_generate('<Key>', when='now')
-        selected = self.text.tag_ranges('sel')
+        selected = TextUtility.get_selected(self.text)
         if not selected:
             self.text.insert('insert', '    ')
         else:
             # First line of selection
-            start = int(selected[0].string.split('.')[0])
+            start = TextUtility.line(selected[0].string)
             # Last line of selection
-            end = int(selected[1].string.split('.')[0])
+            end = TextUtility.line(selected[1].string)
             for line in range(start, end + 1):
                 # Insert 4 spaces at the start of every selected line
                 self.text.insert(f'{line}.0', '    ')
@@ -274,54 +348,53 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
             self.text.tag_add('sel', f'{selected[0]}+4c', f'{selected[1]}+4c')
         return 'break'
 
+    @event_decorator
     def remove_tab(self, event):
-        self.text.event_generate('<Key>', when='now')
-        selected = self.text.tag_ranges('sel')
+        selected = TextUtility.get_selected(self.text)
         if selected:
             # First line of selection
-            start = int(selected[0].string.split('.')[0])
+            start = TextUtility.line(selected[0].string)
             # Last line of selection
-            end = int(selected[1].string.split('.')[0])
+            end = TextUtility.line(selected[1].string)
         else:
             # If nothing is selected, then the first and last line of the selection
             # is the current line
-            start = end = int(self.text.index('insert').split('.')[0])
+            start = end = TextUtility.line(self.text.index('insert'))
 
         for line in range(start, end + 1):
             index = self._search_spaces(line)
-            col = int(index.split('.')[1])
+            col = TextUtility.col(index)
             self.text.delete(f'{line}.0', f'{line}.{min(col, 4)}')
 
         # This method seems to work without having to replace the current selection.
         # However, if it breaks, remove and add the selected tag like in `self.add_tag`
         return 'break'
 
+    @event_decorator
     def return_key(self, event):
-        self.text.event_generate('<Key>', when='now')
 
-        # I still need to make this delete stuff if something is selected but I cba rn.
+        TextUtility.delete_selected(self.text)
 
         insert = self.text.index('insert')
 
         # Find the amount of spaces at the start of the line
-        line = int(insert.split('.')[0])
+        line = TextUtility.line(insert)
         index = self._search_spaces(line)
-        spaces = int(index.split('.')[1])
+        spaces = TextUtility.col(index)
 
         # Now insert newline along with the required amount of spaces
         self.text.insert(insert, '\n' + ' ' * spaces)
         return 'break'
 
+    @event_decorator
     def backspace_key(self, event):
-        self.text.event_generate('<Key>', when='now')
 
         # Allow for default behaviour if anything is selected
-        selected = self.text.tag_ranges('sel')
-        if selected:
+        if TextUtility.get_selected(self.text):
             return None
 
         insert = self.text.index('insert')
-        line, col = map(int, insert.split('.'))
+        line, col = TextUtility.line_col(insert)
         index = self._search_spaces(line)
 
         # Allow for default behaviour if cursor is at the start of the
@@ -330,7 +403,7 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
         if col == 0 or insert != index:
             return None
 
-        spaces = int(index.split('.')[1])
+        spaces = TextUtility.col(index)
         to_delete = spaces % 4 or 4
         self.text.delete(f'{line}.0', f'{line}.{to_delete}')
         return 'break'
@@ -811,17 +884,19 @@ class Brainfuck(tk.Frame):
                 chars, key=lambda x: self.command_highlights.get(x, 'comment'))
             return itertools.chain.from_iterable((''.join(group), key) for key, group in groups)
 
-        self.code_text_frame = CodeFrame(self, .02, .1, .5, .88, text_kwargs={
-            'undo': True,
-            'wrap': 'none',
-            'tag_func': tag_func,
-            # 'font': ('Consolas', 10)
-        })
+        self.code_text_frame = CodeFrame(self, .02, .1, .5, .88,
+                                         text_kwargs={
+                                             'undo': True,
+                                             'wrap': 'none',
+                                             'tag_func': tag_func,
+                                             # 'font': ('Consolas', 10)
+                                         })
         self.code_text = self.code_text_frame.text
         self.code_text.bind(
             '<Control-s>', lambda e: self.file_frame.save_file())
         self.code_text.bind('<Key>', self.code_text_input)
         self.code_text.bind('<Button-3>', self.set_breakpoint)  # rmb
+        self.code_text.bind('<<Modified>>', self.code_text_modified)
         for tag, colour in ('comment', 'grey'), ('loop', 'red'), ('io', 'blue'), ('pointer', 'purple'), ('cell', 'green'):
             self.code_text.tag_configure(tag, foreground=colour)
 
@@ -839,7 +914,7 @@ class Brainfuck(tk.Frame):
 
     def resize(self, *args):
         """Called when the screen is resized"""
-        self.update()
+        self.update_idletasks()
         for frame in self.main_frames:
             frame.resize()
 
@@ -852,7 +927,9 @@ class Brainfuck(tk.Frame):
         self.parse_code_text()
         try:
             self.interpreter = BFInterpreter(
-                self.get_program_text(), self.get_next_input_char)
+                self.get_program_text(),
+                input_func=self.get_next_input_char,
+                output_func=self.configure_output)
         except ProgramSyntaxError as error:
             self.handle_interpreter_error(error)
             self.commands_frame.reset_buttons()
@@ -1007,7 +1084,6 @@ class Brainfuck(tk.Frame):
     def configure_current(self):
         """Configures all the necessary output after a command."""
         self.highlight_cell()
-        self.configure_output()
         self.hightlight_text()
         self.commands_frame.update_instruction_counter(
             self.interpreter.instruction_count)
@@ -1033,11 +1109,10 @@ class Brainfuck(tk.Frame):
         self.tape_frame.set_cell(
             self.interpreter.tape_pointer, self.interpreter.current_cell)
 
-    def configure_output(self):
+    def configure_output(self, output):
         """Make sure the output is correct. If the current output is too short, add
         the missing characters to the end. If the current output is too long, delete
         the extra characters"""
-        output = self.interpreter.output
         current_output = self.output_text.get('1.0', 'end-1c')
 
         if len(output) > len(current_output):
@@ -1124,7 +1199,7 @@ class Brainfuck(tk.Frame):
 
         if event.char in ASCII_PRINTABLE:
             if self.insert_entry_valid('insert'):
-                self.input_entry_delete_selected()
+                TextUtility.delete_selected(self.input_entry)
                 self.insert_entry_char(event.char)
                 self.input_entry.see('insert')
             return 'break'
@@ -1139,7 +1214,7 @@ class Brainfuck(tk.Frame):
         """Insert each character in the clipboard one by one.  Prevent
         user from deleting input that has already been processed."""
         if self.insert_entry_valid('insert'):
-            self.input_entry_delete_selected()
+            TextUtility.delete_selected(self.input_entry)
             for char in self.input_entry.clipboard_get():
                 self.insert_entry_char(char)
             self.input_entry.see('insert')
@@ -1155,28 +1230,17 @@ class Brainfuck(tk.Frame):
         if not self.interpreter:
             return True
         last_input = self.past_input_spans[-1][1]
+
+        if TextUtility.within_selected(self.input_entry):
+            # If text is selected and the cursor is within the current selection,
+            # then make the comparison index the start of the current selection
+            index = TextUtility.get_selected(self.input_entry)[0]
+
         if self.input_entry.compare(index, '<', last_input):
             return False
-        selection_range = self.input_entry.tag_ranges('sel')
-        if selection_range:
-            # Check wether the cursor is within the selection. If it is, then
-            # make sure the selection is in front of the last index.
-            if self.input_entry.compare('insert', '>=', selection_range[0]) \
-                    and self.input_entry.compare('insert', '<=', selection_range[1]) \
-                    and self.input_entry.compare(selection_range[0], '<', last_input):
-                return False
         return True
 
-    def input_entry_delete_selected(self):
-        """If text is selected, then delete it if the cursor is within the selection."""
-        selection_range = self.input_entry.tag_ranges('sel')
-        if selection_range:
-            # Only delete if the cursor is within the current selection.
-            if self.input_entry.compare('insert', '>=', selection_range[0]) \
-                    and self.input_entry.compare('insert', '<=', selection_range[1]):
-                self.input_entry.delete(*selection_range)
-
-    def code_text_input(self, event):
+    def code_text_input(self, *event):
         """When a key is pressed in `self.code_text`. If code is running, then disallow
         the key press. If there is currently an interpreter active, delete it and reset.
         Remove any code tags if there are any (error and highlight)."""
@@ -1194,6 +1258,11 @@ class Brainfuck(tk.Frame):
         # if self.commands_frame.error_text.winfo_ismapped():
         #     self.commands_frame.remove_error_text()
         return None
+
+    def code_text_modified(self, event):
+        """Method bound to <<Modified>> event on `self.code_text`.
+        Call the set_modified method of file_frame"""
+        self.file_frame.set_modified(self.code_text.edit_modified())
 
     def set_breakpoint(self, event):
         """Called if user right clicked on `self.code_text`. Sets a breakpoint
@@ -1235,6 +1304,8 @@ class Brainfuck(tk.Frame):
         self.code_text.edit_reset()
         self.code_text.insert('1.0', code)
 
+        self.code_text.edit_modified(False)
+
     def parse_code_text(self):
         """Need to think of a better name for this.
         Creates dicts `self.pointer_to_index` and `self.index_to_poitner` of
@@ -1270,7 +1341,7 @@ if __name__ == '__main__':
 
 """
 TODO:
-    - Star if modifed and not saved
+    - Star if modifed and not saved  - Done :)
 
     - Return key indents to the same level as the previous indentation - Done :)
     - BS key removes indentation level - Done :)
