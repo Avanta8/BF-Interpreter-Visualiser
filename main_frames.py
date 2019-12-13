@@ -191,9 +191,9 @@ class TapeFrame(ResizeFrame):
         for _ in range(20):
             self.add_cell()
 
-        self.last_tape_length = -1
-        self.last_rows = -1
-        self.last_columns = -1
+        self.last_tape_length = 0
+        self.last_rows = 0
+        self.last_columns = 0
         self.last_cell_ind = 0
         self.resize_canvas()
 
