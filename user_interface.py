@@ -191,92 +191,103 @@ class ScrollTextFrame(tk.Frame):
                 row=base_row + 1, column=base_column, sticky='nesw')
 
 
-class FileFrame(ResizeFrame):
+class MenuBar(tk.Menu):
     """Frame for file handling. Contains 4 buttons: New, Open, Save, Save As."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.create_widgets()
+        self.create_menus()
 
+        # Only an interpreter frame should set this to a value other than None
+        self.active_frame = None
         self.file_types = (('Brainfuck (*.b)', '*.b'), ('All Files', '*.*'))
         self.current_filename = ''
         self.modified = False
 
-    def create_widgets(self):
+    def create_menus(self):
         """4 buttons: New, Open, Save, Save As."""
-        new_button = tk.Button(
-            self, width=8, text='New', command=self.new_file)
-        open_button = tk.Button(
-            self, width=8, text='Open', command=self.open_file)
-        save_button = tk.Button(
-            self, width=8, text='Save', command=self.save_file)
-        save_as_button = tk.Button(
-            self, width=8, text='Save As', command=self.save_as)
 
-        new_button.grid(row=0, column=0)
-        open_button.grid(row=0, column=1)
-        save_button.grid(row=0, column=2)
-        save_as_button.grid(row=0, column=3)
+        self.bind_all('<Control-n>', self.new_file)
+        self.bind_all('<Control-o>', self.open_file)
+        self.bind_all('<Control-s>', self.save_file)
+        self.bind_all('<Control-Shift-S>', self.save_file)
 
-    def new_file(self):
+        filemenu = tk.Menu(self, tearoff=0)
+        filemenu.add_command(label='New', command=self.new_file, accelerator='Ctrl+N')
+        filemenu.add_command(label='Open', command=self.open_file, accelerator='Ctrl+O')
+        filemenu.add_command(label='Save', command=self.save_file, accelerator='Ctrl+S')
+        filemenu.add_command(label='Save As', command=self.save_as, accelerator='Ctrl+Shift+S')
+
+        self.add_cascade(label='File', menu=filemenu)
+
+    def new_file(self, *args):
         """Create a new blank file."""
-        self.master.load_program_text('')
+        if not self.active_frame:
+            return
+        self.active_frame.load_program_text('')
         self.current_filename = ''
-        self.rename_window()
+        self._rename_window()
 
-    def open_file(self):
+    def open_file(self, *args):
         """Open the selected file. If no file is selected, then do nothing."""
+        if not self.active_frame:
+            return
         filename = filedialog.askopenfilename(filetypes=self.file_types)
         if not filename:
             return
 
-        read = self.read_file(filename)
-        self.master.load_program_text(read)
+        read = self._read_file(filename)
+        self.active_frame.load_program_text(read)
         self.current_filename = filename
-        self.rename_window()
+        self._rename_window()
 
-    def save_file(self):
+    def save_file(self, *args):
+        print(args)
         """Save the current file. If the file has not previously been saved,
         then have the save functionality as save as."""
+        if not self.active_frame:
+            return
         if not self.current_filename:
             self.save_as()
             return
 
-        self.write_file(self.current_filename)
-        self.master.code_text.edit_modified(False)
-        self.rename_window()
+        self._write_file(self.current_filename)
+        self.active_frame.code_text.edit_modified(False)
+        self._rename_window()
 
-    def save_as(self):
+    def save_as(self, *args):
         """Save the file as a new filename. If no filename is selected, then do nothing."""
+        if not self.active_frame:
+            return
         filename = filedialog.asksaveasfilename(
             filetypes=self.file_types, defaultextension='.*')
         if not filename:
             return
 
-        self.write_file(filename)
-        self.master.code_text.edit_modified(False)
+        self._write_file(filename)
+        self.active_frame.code_text.edit_modified(False)
         self.current_filename = filename
-        self.rename_window()
+        self._rename_window()
 
-    def read_file(self, filename):
+    def _read_file(self, filename):
         """Read `filename` and return the contents."""
         with open(filename, 'r') as file:
             read = file.read()
         return read
 
-    def write_file(self, filename):
+    def _write_file(self, filename):
         """Get the program text and write that to `filename`."""
-        program_text = self.master.get_program_text()
+        program_text = self.active_frame.get_program_text()
         with open(filename, 'w') as file:
             file.write(program_text)
 
-    def rename_window(self):
+    def _rename_window(self):
         """Rename the root window based on the current file."""
         filename = f'{os.path.basename(self.current_filename)} - BF' if self.current_filename else 'BF'
         modified = f'{"* " if self.modified else ""}'
         title = f'{modified}{filename}'
-        self.winfo_toplevel().wm_title(title)
+        self.master.wm_title(title)
 
     def set_modified(self, value):
         """If self.modified != value, then set it to `value` and rename the window."""
@@ -284,7 +295,11 @@ class FileFrame(ResizeFrame):
             return
 
         self.modified = value
-        self.rename_window()
+        self._rename_window()
+
+    def set_active_frame(self, frame):
+        self.active_frame = frame
+        self.new_file()
 
 
 class CodeFrame(ResizeFrame, ScrollTextFrame):
@@ -306,6 +321,7 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
         self.text.bind('<Shift-Tab>', self.remove_tab)
         self.text.bind('<Return>', self.return_key)
         self.text.bind('<BackSpace>', self.backspace_key)
+        self.text.bind('<space>', self.space_key)
 
         self.code_line_numbers = TextLineNumbers(
             self, textwidget=self.text, width=30)
@@ -331,6 +347,7 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
 
     @event_decorator
     def add_tab(self, event):
+        self.text.edit_separator()
         selected = TextUtility.get_selected(self.text)
         if not selected:
             self.text.insert('insert', '    ')
@@ -350,6 +367,7 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
 
     @event_decorator
     def remove_tab(self, event):
+        self.text.edit_separator()
         selected = TextUtility.get_selected(self.text)
         if selected:
             # First line of selection
@@ -372,6 +390,7 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
 
     @event_decorator
     def return_key(self, event):
+        self.text.edit_separator()
 
         TextUtility.delete_selected(self.text)
 
@@ -379,7 +398,7 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
 
         # Find the amount of spaces at the start of the line
         line = TextUtility.line(insert)
-        index = self._search_spaces(line)
+        index = self._search_spaces(line, end='insert')
         spaces = TextUtility.col(index)
 
         # Now insert newline along with the required amount of spaces
@@ -395,7 +414,7 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
 
         insert = self.text.index('insert')
         line, col = TextUtility.line_col(insert)
-        index = self._search_spaces(line)
+        index = self._search_spaces(line, end='insert')
 
         # Allow for default behaviour if cursor is at the start of the
         # line or if there are non-whitespace characters between the start
@@ -408,13 +427,20 @@ class CodeFrame(ResizeFrame, ScrollTextFrame):
         self.text.delete(f'{line}.0', f'{line}.{to_delete}')
         return 'break'
 
-    def _search_spaces(self, line):
-        """Searches for the first non-space character in `line`"""
+    @event_decorator
+    def space_key(self, event):
+        self.text.edit_separator()
+
+    def _search_spaces(self, line, end=None):
+        """Searches for the first non-space character in `line` up to `end`. Search stops at
+        last character in line if `end` is not given."""
         linestart = f'{line}.0'
-        lineend = self.text.index(f'{linestart} lineend')
+        lineend = self.text.index(end if end else f'{linestart} lineend')
         index = self.text.search(
             '[^ ]', linestart, stopindex=lineend, regexp=True) or lineend
         return index
+
+    event_decorator = staticmethod(event_decorator)
 
 
 class TapeFrame(ResizeFrame):
@@ -849,22 +875,19 @@ class Brainfuck(tk.Frame):
         self.set_runspeed()
         self.resize()
 
-        self.file_frame.new_file()
+        self.menubar = self.master.menubar
+        self.menubar.set_active_frame(self)
 
         self.reset_all()
 
     def create_widgets(self):
-        """Create the 4 main frames that go in the interpreter.
+        """Create the 3 main frames that go in the interpreter.
 
         Main frames:
-            file_frame -- File commands: (new, open, save, save as),
             code_text_frame -- Where the user types the code to be interpreted,
             tape_frame -- The frame where the cells of the tape are displayed,
             commands_frame -- The commands for the interpreter eg. run, step, change
                               speed etc. Also where input / output is."""
-
-        # Create file frame
-        self.file_frame = FileFrame(self, .02, .02, .5, .08)
 
         # Create code text frame
         self.command_highlights = {
@@ -892,8 +915,6 @@ class Brainfuck(tk.Frame):
                                              # 'font': ('Consolas', 10)
                                          })
         self.code_text = self.code_text_frame.text
-        self.code_text.bind(
-            '<Control-s>', lambda e: self.file_frame.save_file())
         self.code_text.bind('<Key>', self.code_text_input)
         self.code_text.bind('<Button-3>', self.set_breakpoint)  # rmb
         self.code_text.bind('<<Modified>>', self.code_text_modified)
@@ -909,7 +930,7 @@ class Brainfuck(tk.Frame):
         self.input_entry.bind('<Control-v>', self.input_entry_paste)
         self.input_entry.bind('<Key>', self.input_entry_input)
 
-        self.main_frames = [self.file_frame, self.code_text_frame,
+        self.main_frames = [self.code_text_frame,
                             self.tape_frame, self.commands_frame]
 
     def resize(self, *args):
@@ -1208,6 +1229,10 @@ class Brainfuck(tk.Frame):
             # Otherwise, allow for default behaviour.
             if not self.insert_entry_valid('insert-1c'):
                 return 'break'
+        elif event.keysym == 'Delete':
+            # Delete key (the one above backspace)
+            if not self.insert_entry_valid('insert'):
+                return 'break'
         return None
 
     def input_entry_paste(self, event):
@@ -1261,8 +1286,8 @@ class Brainfuck(tk.Frame):
 
     def code_text_modified(self, event):
         """Method bound to <<Modified>> event on `self.code_text`.
-        Call the set_modified method of file_frame"""
-        self.file_frame.set_modified(self.code_text.edit_modified())
+        Call the set_modified method of menubar"""
+        self.menubar.set_modified(self.code_text.edit_modified())
 
     def set_breakpoint(self, event):
         """Called if user right clicked on `self.code_text`. Sets a breakpoint
@@ -1325,14 +1350,24 @@ class Brainfuck(tk.Frame):
             index = self.code_text.index(f'{index}+1c')
 
 
+class App(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.geometry('1280x720')
+        self.minsize(690, 570)
+
+        self.menubar = MenuBar(self)
+        self.config(menu=self.menubar)
+
+    def run(self):
+        Brainfuck(self)
+
+        self.mainloop()
+
+
 def main():
-    root = tk.Tk()
-    root.geometry('1280x720')
-    root.minsize(690, 570)
-
-    Brainfuck(root)
-
-    root.mainloop()
+    root = App()
+    root.run()
 
 
 if __name__ == '__main__':
@@ -1353,4 +1388,6 @@ TODO:
 
     - If you jump to end of program, then jump to start, the location of the first character creeps upwards.
         This only happens on some programs. Eg, my Ceaser Cipher. Reason found: Its because of comment at end. Fixed now :)
+
+    - delete key (above backspace) breaks it.  - Done :)
 """
